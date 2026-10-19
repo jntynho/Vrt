@@ -1,0 +1,195 @@
+package com.example.ui.components
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.R
+import com.example.data.local.entity.ActorEntity
+import com.example.data.local.entity.StudioEntity
+import com.example.ui.ScreenState
+import com.example.ui.SortMode
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalVaultPalette
+
+/**
+ * HomeTopAppBar - Unified Home & Content Header powered by AppTophead.
+ */
+@Composable
+fun HomeTopAppBar(
+    currentScreen: ScreenState,
+    targetActor: ActorEntity?,
+    targetStudio: StudioEntity?,
+    actorsMap: Map<String, String>,
+    studiosMap: Map<String, String>,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    currentSort: SortMode,
+    onSortChange: (SortMode) -> Unit,
+    onOpenDrawer: () -> Unit,
+    onNavigateBack: () -> Unit,
+    onAddScene: () -> Unit,
+    onEditActor: () -> Unit = {},
+    onEditStudio: () -> Unit = {},
+    onSearchActorStash: () -> Unit = {},
+    onSearchStudioStash: () -> Unit = {}
+) {
+    val palette = LocalVaultPalette.current
+    val accent = LocalAccentColor.current
+    var isSearchExpanded by remember { mutableStateOf(false) }
+    var showSortMenu by remember { mutableStateOf(false) }
+
+    val headerTitle = when {
+        targetActor != null -> targetActor.name
+        targetStudio != null -> targetStudio.name
+        currentScreen is ScreenState.ActorScenes -> {
+            val id = currentScreen.actorId
+            actorsMap[id] ?: id
+        }
+        currentScreen is ScreenState.StudioScenes -> {
+            val id = currentScreen.studioId
+            studiosMap[id] ?: id
+        }
+        else -> "Goony"
+    }
+
+    val isFilteredOrDeep = targetActor != null || targetStudio != null ||
+        currentScreen is ScreenState.ActorScenes || currentScreen is ScreenState.StudioScenes
+
+    AppTophead(
+        title = headerTitle,
+        searchQuery = searchQuery,
+        onSearchQueryChange = onSearchQueryChange,
+        isSearchExpanded = isSearchExpanded,
+        onSearchExpandedChange = { isSearchExpanded = it },
+        searchPlaceholder = "Search scenes, actors, studios...",
+        searchTestTag = "search_scenes_input",
+        navIconType = if (isFilteredOrDeep) NavIconType.BACK else NavIconType.DRAWER,
+        onNavClick = if (isFilteredOrDeep) onNavigateBack else onOpenDrawer,
+        actions = {
+            // Search Action
+            IconButton(
+                onClick = { isSearchExpanded = true },
+                modifier = Modifier.testTag("search_action_button")
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_app_search),
+                    contentDescription = "Search",
+                    tint = palette.textPrimary
+                )
+            }
+
+            // Sort Action with Dropdown Menu
+            Box {
+                IconButton(
+                    onClick = { showSortMenu = true },
+                    modifier = Modifier.testTag("sort_action_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_app_sort),
+                        contentDescription = "Sort Mode",
+                        tint = palette.textPrimary
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false },
+                    modifier = Modifier.vaultTopGlow(cornerRadius = 16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    containerColor = palette.cardBg
+                ) {
+                    val sortOptions = listOf(
+                        SortMode.CARD_NEWEST to "New By Date",
+                        SortMode.CARD_OLDEST to "Old By Date",
+                        SortMode.RECENTLY_ADDED to "Recently Added",
+                        SortMode.OLDEST_ADDED to "Oldest Added"
+                    )
+
+                    sortOptions.forEach { (mode, label) ->
+                        val isSelected = currentSort == mode ||
+                            (mode == SortMode.CARD_NEWEST && currentSort == SortMode.NEWEST) ||
+                            (mode == SortMode.CARD_OLDEST && currentSort == SortMode.OLDEST)
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    label,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) accent else palette.textPrimary
+                                )
+                            },
+                            leadingIcon = {
+                                if (isSelected) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = accent
+                                    )
+                                }
+                            },
+                            onClick = {
+                                onSortChange(mode)
+                                showSortMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // StashDb Search Action in Header
+            if (targetActor != null) {
+                IconButton(
+                    onClick = onSearchActorStash,
+                    modifier = Modifier.testTag("stash_search_actor_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_stash_send_search),
+                        contentDescription = "Search Actor in StashDb",
+                        tint = palette.textPrimary
+                    )
+                }
+            } else if (targetStudio != null) {
+                IconButton(
+                    onClick = onSearchStudioStash,
+                    modifier = Modifier.testTag("stash_search_studio_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_stash_send_search),
+                        contentDescription = "Search Studio in StashDb",
+                        tint = palette.textPrimary
+                    )
+                }
+            }
+
+            // Add Scene Action - ONLY on Main Screen (Home)
+            if (currentScreen is ScreenState.Home) {
+                IconButton(
+                    onClick = onAddScene,
+                    modifier = Modifier.testTag("add_scene_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_app_add),
+                        contentDescription = "Add Scene",
+                        tint = palette.textPrimary
+                    )
+                }
+            }
+        }
+    )
+}

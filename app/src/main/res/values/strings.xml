@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Goony</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_actors">Actors</string>
+    <string name="nav_studios">Studios</string>
+    <string name="nav_stashdb">StashDB</string>
+    <string name="nav_settings">Settings</string>
+</resources>
