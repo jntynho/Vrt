@@ -32,15 +32,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -52,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.network.StashDbApiService
+import com.example.network.StashSceneSortMode
 import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
 import com.example.ui.StashSearchType
@@ -89,7 +93,10 @@ fun StashDbScreen(
     // Persistent state from MainViewModel
     val searchQuery by viewModel.stashSearchQuery.collectAsStateWithLifecycle()
     val activeType by viewModel.stashActiveType.collectAsStateWithLifecycle()
+    val currentSort by viewModel.stashSortMode.collectAsStateWithLifecycle()
     val isSearchExpanded by viewModel.isStashSearchExpanded.collectAsStateWithLifecycle()
+
+    var showSortMenu by remember { mutableStateOf(false) }
 
     val performerResults by viewModel.stashPerformerResults.collectAsStateWithLifecycle()
     val studioResults by viewModel.stashStudioResults.collectAsStateWithLifecycle()
@@ -161,8 +168,8 @@ fun StashDbScreen(
         }
     }
 
-    // Reset visibility and scroll position to top on selection change or mode change
-    LaunchedEffect(selectedPerformer?.id, selectedStudio?.id, activeType) {
+    // Reset visibility and scroll position to top on selection change, mode change, or sort change
+    LaunchedEffect(selectedPerformer?.id, selectedStudio?.id, activeType, currentSort) {
         isHorizontalResultsVisible = true
         gridState.scrollToItem(0)
     }
@@ -398,6 +405,97 @@ fun StashDbScreen(
                             }
                         }
                     } else if (selectedSceneIds.isEmpty()) {
+                        val canShowSortInHeader = when (activeType) {
+                            StashSearchType.ACTORS -> selectedPerformer != null
+                            StashSearchType.STUDIO -> selectedStudio != null
+                            StashSearchType.SEXMEX -> false
+                        }
+
+                        AnimatedVisibility(
+                            visible = canShowSortInHeader,
+                            enter = fadeIn(tween(180)) + scaleIn(initialScale = 0.85f, animationSpec = tween(180)),
+                            exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.85f, animationSpec = tween(140))
+                        ) {
+                            Box {
+                                IconButton(
+                                    onClick = { showSortMenu = true },
+                                    modifier = Modifier.testTag("stashdb_sort_button")
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_app_sort),
+                                        contentDescription = "Sort Scenes",
+                                        tint = palette.textPrimary
+                                    )
+                                }
+
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false },
+                                    modifier = Modifier
+                                        .vaultTopGlow(cornerRadius = 16.dp)
+                                        .widthIn(min = 210.dp),
+                                    shape = RoundedCornerShape(16.dp),
+                                    containerColor = palette.cardBg
+                                ) {
+                                    StashSceneSortMode.entries.forEach { mode ->
+                                        val isSelected = currentSort == mode
+
+                                        val animatedTextColor by animateColorAsState(
+                                            targetValue = if (isSelected) accent else palette.textPrimary,
+                                            animationSpec = tween(durationMillis = 220),
+                                            label = "stash_sort_text_color"
+                                        )
+                                        val animatedBgColor by animateColorAsState(
+                                            targetValue = if (isSelected) accent.copy(alpha = 0.12f) else Color.Transparent,
+                                            animationSpec = tween(durationMillis = 220),
+                                            label = "stash_sort_bg_color"
+                                        )
+
+                                        DropdownMenuItem(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(animatedBgColor)
+                                                .testTag("stash_sort_option_${mode.name.lowercase()}"),
+                                            text = {
+                                                Text(
+                                                    text = mode.displayName,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    color = animatedTextColor,
+                                                    fontSize = 14.5.sp
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                AnimatedVisibility(
+                                                    visible = isSelected,
+                                                    enter = fadeIn(tween(180)) + scaleIn(initialScale = 0.6f, animationSpec = tween(180)),
+                                                    exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.6f, animationSpec = tween(140))
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = accent,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                showSortMenu = false
+                                                if (currentSort != mode) {
+                                                    coroutineScope.launch {
+                                                        isHorizontalResultsVisible = true
+                                                        gridState.scrollToItem(0)
+                                                    }
+                                                    viewModel.setStashSortMode(mode, settings.stashDbApiKey)
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         IconButton(
                             onClick = { viewModel.setStashSearchExpanded(true) },
                             modifier = Modifier.testTag("stashdb_search_action_button")
@@ -834,7 +932,10 @@ fun StashDbScreen(
                                     .fillMaxSize()
                                     .nestedScroll(nestedScrollConnection)
                             ) {
-                                itemsIndexed(scenesList, key = { index, scene -> "${scene.id}_$index" }) { _, scene ->
+                                itemsIndexed(
+                                    items = scenesList,
+                                    key = { index, scene -> "${currentSort.name}_${scene.id}_$index" }
+                                ) { index, scene ->
                                     val isSelected = selectedSceneIds.contains(scene.id)
                                     val parsedDate = remember(scene.date) {
                                         StashDbApiService.parseDateToMillis(scene.date)
@@ -844,17 +945,30 @@ fun StashDbScreen(
                                             (parsedDate != null && Pair(scene.title.trim().lowercase(), parsedDate) in savedTitleAndDatePairs)
                                     }
 
-                                    StashGridPhotoCard(
-                                        scene = scene,
-                                        isSelected = isSelected,
-                                        isAlreadySaved = isAlreadySaved,
-                                        onToggleSelect = {
-                                            viewModel.toggleStashSceneSelection(scene.id)
-                                        },
-                                        onStudioClick = { id, name ->
-                                            studioToBlock = Pair(id, name)
-                                        }
-                                    )
+                                    StashSortAnimatedCardItem(
+                                        index = index,
+                                        sortKey = currentSort.name,
+                                        modifier = Modifier.animateItem(
+                                            fadeInSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                                            placementSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            ),
+                                            fadeOutSpec = tween(durationMillis = 160, easing = FastOutLinearInEasing)
+                                        )
+                                    ) {
+                                        StashGridPhotoCard(
+                                            scene = scene,
+                                            isSelected = isSelected,
+                                            isAlreadySaved = isAlreadySaved,
+                                            onToggleSelect = {
+                                                viewModel.toggleStashSceneSelection(scene.id)
+                                            },
+                                            onStudioClick = { id, name ->
+                                                studioToBlock = Pair(id, name)
+                                            }
+                                        )
+                                    }
                                 }
 
                                 if (isLoadingMore) {
@@ -968,3 +1082,41 @@ fun StashDbScreen(
         }
     }
 }
+
+@Composable
+private fun StashSortAnimatedCardItem(
+    index: Int,
+    sortKey: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val density = LocalDensity.current
+    val initialOffsetY = remember(density) { with(density) { 14.dp.toPx() } }
+    val progress = remember(sortKey) { Animatable(0f) }
+
+    LaunchedEffect(sortKey) {
+        val staggerDelay = (index.coerceAtMost(7)) * 20
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(
+                durationMillis = 260,
+                delayMillis = staggerDelay,
+                easing = FastOutSlowInEasing
+            )
+        )
+    }
+
+    Box(
+        modifier = modifier.graphicsLayer {
+            val p = progress.value
+            alpha = p
+            translationY = (1f - p) * initialOffsetY
+            val scale = 0.965f + (0.035f * p)
+            scaleX = scale
+            scaleY = scale
+        }
+    ) {
+        content()
+    }
+}
+

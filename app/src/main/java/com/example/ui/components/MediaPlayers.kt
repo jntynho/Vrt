@@ -802,13 +802,7 @@ fun CoreMediaPlayer(
             subtitleFontFamily = subtitleFontFamily,
             onSubtitleFontFamilyChange = { subtitleFontFamily = it },
             onToggleVrMode = {
-                val nextState = !isVrMode
-                isVrMode = nextState
-                if (nextState) {
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                } else {
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                }
+                isVrMode = !isVrMode
             },
             onToggleVrGyro = {
                 vrUseGyro = !vrUseGyro

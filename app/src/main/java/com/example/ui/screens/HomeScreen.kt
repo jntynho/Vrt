@@ -247,9 +247,9 @@ fun HomeScreen(
                         sceneCount = 0,
                         onAvatarClick = {
                             if (targetActor != null) {
-                                showEditActorDialog = true
+                                viewModel.searchStashForActor(targetActor.name, settings.stashDbApiKey)
                             } else if (targetStudio != null) {
-                                showEditStudioDialog = true
+                                viewModel.searchStashForStudio(targetStudio.name, settings.stashDbApiKey)
                             }
                         }
                     )
@@ -305,9 +305,9 @@ fun HomeScreen(
                             sceneCount = displayedLinks.size,
                             onAvatarClick = {
                                 if (targetActor != null) {
-                                    showEditActorDialog = true
+                                    viewModel.searchStashForActor(targetActor.name, settings.stashDbApiKey)
                                 } else if (targetStudio != null) {
-                                    showEditStudioDialog = true
+                                    viewModel.searchStashForStudio(targetStudio.name, settings.stashDbApiKey)
                                 }
                             }
                         )

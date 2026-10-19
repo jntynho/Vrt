@@ -50,23 +50,24 @@ fun ActorStudioHeaderBanner(
     val palette = LocalVaultPalette.current
     val accent = LocalAccentColor.current
     val isBetaTest = LocalBetaTestPrivacy.current
-    val circleBorderColor = MaterialTheme.colorScheme.outlineVariant
+    val isLight = palette.name.equals("light", ignoreCase = true)
+    val circleBorderColor = if (isLight) Color.Black else Color.White
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 22.dp, vertical = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Circular Avatar enlarged with adaptive border - clickable to open Details
+        // Circular Avatar with unified Actor/Studio Management border - clickable to open in StashDb
         if (actor != null) {
             Box(
                 modifier = Modifier
-                    .size(78.dp)
+                    .size(92.dp)
                     .clip(CircleShape)
-                    .background(palette.cardBg)
+                    .background(palette.surface)
                     .clickable(onClick = onAvatarClick)
-                    .testTag("edit_actor_header_button")
+                    .testTag("stash_search_actor_button")
             ) {
                 if (actor.imageUrl.isNotBlank()) {
                     val z = actor.imageZoom.coerceIn(1f, 3f)
@@ -100,18 +101,14 @@ fun ActorStudioHeaderBanner(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(accent.copy(alpha = 0.25f), palette.cardBg)
-                                )
-                            ),
+                            .background(palette.cardBg.copy(alpha = 0.85f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_nav_actor),
                             contentDescription = null,
                             tint = palette.textSecondary.copy(alpha = 0.9f),
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(46.dp)
                         )
                     }
                 }
@@ -119,7 +116,7 @@ fun ActorStudioHeaderBanner(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .border(2.dp, circleBorderColor, CircleShape)
+                        .border(1.5.dp, circleBorderColor, CircleShape)
                 )
             }
         } else if (studio != null) {
@@ -130,12 +127,12 @@ fun ActorStudioHeaderBanner(
             }
             Box(
                 modifier = Modifier
-                    .size(78.dp)
+                    .size(92.dp)
                     .clip(CircleShape)
-                    .background(studioCustomBg)
-                    .border(2.dp, circleBorderColor, CircleShape)
+                    .background( if (!studio.logoUrl.isNullOrBlank()) studioCustomBg else palette.cardBg.copy(alpha = 0.85f))
+                    .border(1.5.dp, circleBorderColor, CircleShape)
                     .clickable(onClick = onAvatarClick)
-                    .testTag("edit_studio_header_button"),
+                    .testTag("stash_search_studio_button"),
                 contentAlignment = Alignment.Center
             ) {
                 if (!studio.logoUrl.isNullOrBlank()) {
@@ -160,13 +157,13 @@ fun ActorStudioHeaderBanner(
                         painter = painterResource(id = R.drawable.ic_nav_studio),
                         contentDescription = null,
                         tint = palette.textMuted,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(46.dp)
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(18.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Row(
@@ -176,7 +173,7 @@ fun ActorStudioHeaderBanner(
                 Text(
                     text = actor?.name ?: studio?.name ?: "",
                     color = palette.textPrimary,
-                    fontSize = 19.sp,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -187,14 +184,14 @@ fun ActorStudioHeaderBanner(
                     painter = painterResource(id = R.drawable.ic_verified_badge),
                     contentDescription = "Verified",
                     tint = accent,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(23.dp)
                 )
             }
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "$sceneCount scenes",
                 color = accent,
-                fontSize = 13.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.Medium
             )
         }

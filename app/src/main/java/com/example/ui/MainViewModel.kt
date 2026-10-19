@@ -96,7 +96,8 @@ private data class StashTabCache(
     val selectedStudio: StashStudio? = null,
     val totalCount: Int = 0,
     val currentPage: Int = 1,
-    val canLoadMore: Boolean = false
+    val canLoadMore: Boolean = false,
+    val sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -712,6 +713,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _stashActiveType = MutableStateFlow(StashSearchType.ACTORS)
     val stashActiveType: StateFlow<StashSearchType> = _stashActiveType.asStateFlow()
 
+    private val _stashSortMode = MutableStateFlow(StashSceneSortMode.RELEASE_DATE)
+    val stashSortMode: StateFlow<StashSceneSortMode> = _stashSortMode.asStateFlow()
+
     private val _stashPerformerResults = MutableStateFlow<List<StashPerformer>>(emptyList())
     val stashPerformerResults: StateFlow<List<StashPerformer>> = _stashPerformerResults.asStateFlow()
 
@@ -768,6 +772,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isStashSearchExpanded.value = expanded
     }
 
+    fun setStashSortMode(mode: StashSceneSortMode, apiKey: String) {
+        if (_stashSortMode.value == mode) return
+        _stashSortMode.value = mode
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        when (_stashActiveType.value) {
+            StashSearchType.ACTORS -> {
+                val performer = _stashSelectedPerformer.value
+                if (performer != null) {
+                    selectStashPerformer(performer, effectiveApiKey)
+                }
+            }
+            StashSearchType.STUDIO -> {
+                val studio = _stashSelectedStudio.value
+                if (studio != null) {
+                    selectStashStudio(studio, effectiveApiKey)
+                }
+            }
+            StashSearchType.SEXMEX -> Unit
+        }
+    }
+
     fun setStashActiveType(type: StashSearchType, apiKey: String) {
         if (_stashActiveType.value == type) return
 
@@ -789,7 +814,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedStudio = if (currentType == StashSearchType.STUDIO) _stashSelectedStudio.value else null,
             totalCount = _stashTotalScenesCount.value,
             currentPage = _stashCurrentPage.value,
-            canLoadMore = _stashCanLoadMore.value
+            canLoadMore = _stashCanLoadMore.value,
+            sortMode = _stashSortMode.value
         )
 
         _stashActiveType.value = type
@@ -807,6 +833,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _stashCanLoadMore.value = cached.canLoadMore
         _stashSelectedPerformer.value = if (type == StashSearchType.STUDIO) null else cached.selectedPerformer
         _stashSelectedStudio.value = if (type == StashSearchType.STUDIO) cached.selectedStudio else null
+        _stashSortMode.value = cached.sortMode
     }
 
     fun toggleStashSceneSelection(sceneId: String) {
@@ -833,6 +860,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _stashSearchError.value = null
         _stashCurrentPage.value = 1
         _stashCanLoadMore.value = false
+        _stashSortMode.value = StashSceneSortMode.RELEASE_DATE
         _isStashLoadingEntities.value = false
         _isStashLoadingScenes.value = false
         _isStashLoadingMore.value = false
@@ -890,7 +918,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         stashTabCacheMap[StashSearchType.ACTORS] = StashTabCache(
                             query = q,
                             performerResults = sorted,
-                            selectedPerformer = sorted.firstOrNull()
+                            selectedPerformer = sorted.firstOrNull(),
+                            sortMode = _stashSortMode.value
                         )
                         _isStashLoadingEntities.value = false
                         if (sorted.isNotEmpty()) selectStashPerformer(sorted.first(), apiKey)
@@ -911,7 +940,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         stashTabCacheMap[StashSearchType.STUDIO] = StashTabCache(
                             query = q,
                             studioResults = sorted,
-                            selectedStudio = sorted.firstOrNull()
+                            selectedStudio = sorted.firstOrNull(),
+                            sortMode = _stashSortMode.value
                         )
                         _isStashLoadingEntities.value = false
                         if (sorted.isNotEmpty()) selectStashStudio(sorted.first(), apiKey)
@@ -1086,6 +1116,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        val activeSort = _stashSortMode.value
+
         stashScenesJob?.cancel()
         stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingScenes.value = true
@@ -1095,10 +1128,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val res = StashDbApiService.queryPerformerScenes(
                 performerId = performer.id,
-                apiKey = apiKey,
+                apiKey = effectiveApiKey,
                 page = 1,
                 perPage = 30,
-                blockMalePerformers = settings.value.blockMalePerformers
+                blockMalePerformers = settings.value.blockMalePerformers,
+                sortMode = activeSort
             )
             res.onSuccess { queryResult ->
                 val currentSettings = settings.value
@@ -1120,6 +1154,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _stashSelectedStudio.value = studio
         _stashSelectedPerformer.value = null
         _stashSelectedSceneIds.value = emptySet()
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        val activeSort = _stashSortMode.value
+
         stashScenesJob?.cancel()
         stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingScenes.value = true
@@ -1129,11 +1166,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val res = StashDbApiService.queryStudioScenes(
                 studioId = studio.id,
-                apiKey = apiKey,
+                apiKey = effectiveApiKey,
                 page = 1,
                 perPage = 30,
                 providedChildIds = studio.childIds,
-                blockMalePerformers = settings.value.blockMalePerformers
+                blockMalePerformers = settings.value.blockMalePerformers,
+                sortMode = activeSort
             )
             res.onSuccess { queryResult ->
                 val currentSettings = settings.value
@@ -1168,6 +1206,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentType = _stashActiveType.value
         val selectedPerf = _stashSelectedPerformer.value
         val selectedStud = _stashSelectedStudio.value
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        val activeSort = _stashSortMode.value
 
         if (currentType == StashSearchType.ACTORS && selectedPerf == null) return
         if (currentType == StashSearchType.STUDIO && selectedStud == null) return
@@ -1181,10 +1221,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (currentType == StashSearchType.ACTORS && selectedPerf != null) {
                 val res = StashDbApiService.queryPerformerScenes(
                     performerId = selectedPerf.id,
-                    apiKey = apiKey,
+                    apiKey = effectiveApiKey,
                     page = nextPage,
                     perPage = 30,
-                    blockMalePerformers = settings.value.blockMalePerformers
+                    blockMalePerformers = settings.value.blockMalePerformers,
+                    sortMode = activeSort
                 )
                 res.onSuccess { queryResult ->
                     appendStashScenes(queryResult.scenes, queryResult.count, nextPage)
@@ -1195,11 +1236,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else if (currentType == StashSearchType.STUDIO && selectedStud != null) {
                 val res = StashDbApiService.queryStudioScenes(
                     studioId = selectedStud.id,
-                    apiKey = apiKey,
+                    apiKey = effectiveApiKey,
                     page = nextPage,
                     perPage = 30,
                     providedChildIds = selectedStud.childIds,
-                    blockMalePerformers = settings.value.blockMalePerformers
+                    blockMalePerformers = settings.value.blockMalePerformers,
+                    sortMode = activeSort
                 )
                 res.onSuccess { queryResult ->
                     appendStashScenes(queryResult.scenes, queryResult.count, nextPage)

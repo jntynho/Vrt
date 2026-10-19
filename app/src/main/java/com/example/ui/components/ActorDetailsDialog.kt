@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -38,6 +39,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.example.R
 import com.example.data.local.entity.ActorEntity
 import com.example.network.StashDbApiService
@@ -45,6 +49,7 @@ import com.example.ui.theme.LocalBetaTestPrivacy
 import com.example.ui.theme.LocalVaultPalette
 import com.example.ui.theme.privacyImageBlur
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -55,6 +60,7 @@ fun ActorDetailsDialog(
     onSave: (ActorEntity) -> Unit,
     onDeleteCascade: (String) -> Unit
 ) {
+    val context = LocalContext.current
     var isAdjustMode by remember { mutableStateOf(false) }
     var confirmDeleteActor by remember { mutableStateOf(false) }
 
@@ -73,6 +79,7 @@ fun ActorDetailsDialog(
     var editedName by remember(actor.id) { mutableStateOf(actor.name) }
     var editedImageUrl by remember(actor.id) { mutableStateOf(actor.imageUrl) }
     var selectedImageUrl by remember(actor.id) { mutableStateOf(actor.imageUrl) }
+    var pendingPastedImageUrl by remember(actor.id) { mutableStateOf<String?>(null) }
     var fetchedImages by remember(actor.id) { mutableStateOf<List<String>>(initialActorImages) }
     var hasFetchedRemoteImages by remember(actor.id) { mutableStateOf(false) }
     var isFetchingImages by remember(actor.id) { mutableStateOf(false) }
@@ -83,6 +90,48 @@ fun ActorDetailsDialog(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
         label = "reset_spin"
     )
+
+    // Verify pasted URL is a real loadable image and transition directly to Adjust Photo once loaded
+    LaunchedEffect(pendingPastedImageUrl) {
+        val candidateUrl = pendingPastedImageUrl?.trim() ?: return@LaunchedEffect
+        if (candidateUrl.isBlank()) {
+            pendingPastedImageUrl = null
+            return@LaunchedEffect
+        }
+        val isLikelyUrl = candidateUrl.startsWith("http://", ignoreCase = true) ||
+            candidateUrl.startsWith("https://", ignoreCase = true) ||
+            candidateUrl.startsWith("content://", ignoreCase = true) ||
+            candidateUrl.startsWith("file://", ignoreCase = true) ||
+            candidateUrl.startsWith("data:image/", ignoreCase = true)
+        if (!isLikelyUrl) {
+            pendingPastedImageUrl = null
+            return@LaunchedEffect
+        }
+
+        val request = ImageRequest.Builder(context)
+            .data(candidateUrl)
+            .allowHardware(false)
+            .build()
+        val result = try {
+            context.imageLoader.execute(request)
+        } catch (_: Exception) {
+            null
+        }
+        if (result is SuccessResult) {
+            editedImageUrl = candidateUrl
+            selectedImageUrl = candidateUrl
+            if (!fetchedImages.contains(candidateUrl)) {
+                fetchedImages = listOf(candidateUrl) + fetchedImages
+            }
+            posX = 50f
+            posY = 50f
+            zoom = 1.0f
+            pendingPastedImageUrl = null
+            isAdjustMode = true
+        } else {
+            pendingPastedImageUrl = null
+        }
+    }
 
     LaunchedEffect(actor.id, isAdjustMode) {
         if (isAdjustMode && !hasFetchedRemoteImages && stashDbApiKey.isNotBlank()) {
@@ -188,7 +237,7 @@ fun ActorDetailsDialog(
                             posX = 50f
                             posY = 50f
                             zoom = 1.0f
-                            selectedImageUrl = actor.imageUrl
+                            selectedImageUrl = editedImageUrl.ifBlank { actor.imageUrl }
                         },
                         modifier = Modifier.testTag("adjust_photo_reset_button")
                     ) {
@@ -227,16 +276,24 @@ fun ActorDetailsDialog(
                     // Editable Image URL Field
                     SceneInputField(
                         value = editedImageUrl,
-                        onValueChange = {
-                            editedImageUrl = it
-                            selectedImageUrl = it
+                        onValueChange = { newValue ->
+                            val prevValue = editedImageUrl
+                            editedImageUrl = newValue
+                            selectedImageUrl = newValue
+                            // Detect clipboard paste via keyboard/context-menu (multi-character jump to a URL)
+                            val trimmed = newValue.trim()
+                            if (trimmed.isNotEmpty() && kotlin.math.abs(newValue.length - prevValue.length) > 5) {
+                                pendingPastedImageUrl = trimmed
+                            }
                         },
                         placeholder = "Image URL",
                         readOnly = false,
                         trailingIcon = {
-                            PasteTrailingIcon(onPaste = {
-                                editedImageUrl = it
-                                selectedImageUrl = it
+                            PasteTrailingIcon(onPaste = { pastedUrl ->
+                                val trimmed = pastedUrl.trim()
+                                editedImageUrl = trimmed
+                                selectedImageUrl = trimmed
+                                pendingPastedImageUrl = trimmed
                             })
                         },
                         backgroundColor = palette.cardBg,

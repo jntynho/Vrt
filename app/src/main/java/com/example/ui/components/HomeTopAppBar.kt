@@ -152,26 +152,26 @@ fun HomeTopAppBar(
                 }
             }
 
-            // StashDb Search Action in Header
+            // Edit Actor / Studio Action in Header
             if (targetActor != null) {
                 IconButton(
-                    onClick = onSearchActorStash,
-                    modifier = Modifier.testTag("stash_search_actor_button")
+                    onClick = onEditActor,
+                    modifier = Modifier.testTag("edit_actor_header_button")
                 ) {
                     Icon(
-                        painter = painterResource(id = R.drawable.ic_stash_send_search),
-                        contentDescription = "Search Actor in StashDb",
+                        painter = painterResource(id = R.drawable.ic_edit_pencil),
+                        contentDescription = "Edit Actor",
                         tint = palette.textPrimary
                     )
                 }
             } else if (targetStudio != null) {
                 IconButton(
-                    onClick = onSearchStudioStash,
-                    modifier = Modifier.testTag("stash_search_studio_button")
+                    onClick = onEditStudio,
+                    modifier = Modifier.testTag("edit_studio_header_button")
                 ) {
                     Icon(
-                        painter = painterResource(id = R.drawable.ic_stash_send_search),
-                        contentDescription = "Search Studio in StashDb",
+                        painter = painterResource(id = R.drawable.ic_edit_pencil),
+                        contentDescription = "Edit Studio",
                         tint = palette.textPrimary
                     )
                 }

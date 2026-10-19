@@ -54,6 +54,7 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
     private val rotationSensor: Sensor? =
         sensorManager?.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
             ?: sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            ?: sensorManager?.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR)
 
     private val renderer: HalfSceneHemisphereRenderer
     private var surfaceListener: VideoSurfaceListener? = null
@@ -163,8 +164,10 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || !useSensorRotation) return
-        if (event.sensor.type != Sensor.TYPE_GAME_ROTATION_VECTOR &&
-            event.sensor.type != Sensor.TYPE_ROTATION_VECTOR
+        val type = event.sensor.type
+        if (type != Sensor.TYPE_GAME_ROTATION_VECTOR &&
+            type != Sensor.TYPE_ROTATION_VECTOR &&
+            type != Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR
         ) {
             return
         }
@@ -213,26 +216,28 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
         }
 
         // Compute relative rotation dR = R_prev^T * R_curr in the phone's local display frame.
-        // Forward axis (-Z) in current display frame expressed in previous display frame:
-        // fx = -dR[0, 2], fy = -dR[1, 2], fz = -dR[2, 2]
+        // Forward axis (-Z_curr) projected onto previous frame axes (X_prev, Y_prev, -Z_prev):
+        // fx = X_prev . (-Z_curr) = -dR02
+        // fy = Y_prev . (-Z_curr) = -dR12
+        // fz = (-Z_prev) . (-Z_curr) = +dR22 (approx +1.0)
         val dR02 = prevDisplayRotationMatrix[0] * displayRotationMatrix[2] +
             prevDisplayRotationMatrix[3] * displayRotationMatrix[5] +
             prevDisplayRotationMatrix[6] * displayRotationMatrix[8]
         val dR12 = prevDisplayRotationMatrix[1] * displayRotationMatrix[2] +
             prevDisplayRotationMatrix[4] * displayRotationMatrix[5] +
             prevDisplayRotationMatrix[7] * displayRotationMatrix[8]
-        val dR22 = prevDisplayRotationMatrix[2] * displayRotationMatrix[2] +
+        val dR22 = (prevDisplayRotationMatrix[2] * displayRotationMatrix[2] +
             prevDisplayRotationMatrix[5] * displayRotationMatrix[5] +
-            prevDisplayRotationMatrix[8] * displayRotationMatrix[8]
+            prevDisplayRotationMatrix[8] * displayRotationMatrix[8]).coerceAtLeast(1e-6f)
 
         System.arraycopy(displayRotationMatrix, 0, prevDisplayRotationMatrix, 0, 9)
 
-        val deltaYawDeg = Math.toDegrees(atan2(-dR02.toDouble(), -dR22.toDouble())).toFloat()
-        val deltaPitchDeg = Math.toDegrees(atan2(-dR12.toDouble(), -dR22.toDouble())).toFloat()
+        val deltaYawDeg = Math.toDegrees(atan2(-dR02.toDouble(), dR22.toDouble())).toFloat()
+        val deltaPitchDeg = Math.toDegrees(atan2(-dR12.toDouble(), dR22.toDouble())).toFloat()
 
-        // Filter out micro sensor noise while keeping responsive head-tracking
-        val cleanYaw = if (kotlin.math.abs(deltaYawDeg) > 0.008f && kotlin.math.abs(deltaYawDeg) < 25f) deltaYawDeg else 0f
-        val cleanPitch = if (kotlin.math.abs(deltaPitchDeg) > 0.008f && kotlin.math.abs(deltaPitchDeg) < 25f) deltaPitchDeg else 0f
+        // Filter out only extreme sensor spikes while preserving smooth micro-movements
+        val cleanYaw = if (kotlin.math.abs(deltaYawDeg) > 0.0002f && kotlin.math.abs(deltaYawDeg) < 35f) deltaYawDeg else 0f
+        val cleanPitch = if (kotlin.math.abs(deltaPitchDeg) > 0.0002f && kotlin.math.abs(deltaPitchDeg) < 35f) deltaPitchDeg else 0f
 
         if (cleanYaw != 0f || cleanPitch != 0f) {
             renderer.addCameraRotationDelta(cleanYaw, cleanPitch)

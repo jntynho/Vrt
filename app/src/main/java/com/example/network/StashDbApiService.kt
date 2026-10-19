@@ -48,6 +48,20 @@ data class StashSceneQueryResult(
     val scenes: List<StashScene> = emptyList()
 )
 
+enum class StashSceneSortMode(
+    val displayName: String,
+    val graphQlSort: String,
+    val defaultDirection: String = "DESC"
+) {
+    RELEASE_DATE("Release Date", "DATE", "DESC"),
+    TITLE("Title", "TITLE", "ASC"),
+    TRENDING("Trending", "TRENDING", "DESC"),
+    POPULARITY("Popularity", "POPULARITY", "DESC"),
+    CREATED_AT("Created At", "CREATED_AT", "DESC"),
+    UPDATED_AT("Updated At", "UPDATED_AT", "DESC"),
+    DURATION("Duration", "DURATION", "DESC")
+}
+
 object StashDbApiService {
     private const val GRAPHQL_ENDPOINT = "https://stashdb.org/graphql"
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
@@ -472,10 +486,24 @@ object StashDbApiService {
     private suspend fun queryScenesInternal(
         inputObj: JSONObject,
         apiKey: String,
-        blockMalePerformers: Boolean = true
+        blockMalePerformers: Boolean = true,
+        sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
     ): Result<StashSceneQueryResult> {
         val vars = JSONObject().apply { put("input", inputObj) }
-        return executeGraphQL(SCENE_QUERY, vars, apiKey).map { dataObj ->
+        val primaryResult = executeGraphQL(SCENE_QUERY, vars, apiKey)
+        val effectiveDataResult = if (primaryResult.isFailure && sortMode == StashSceneSortMode.POPULARITY) {
+            // Fallback to TRENDING if the remote GraphQL schema aliases Popularity under TRENDING
+            val fallbackInput = JSONObject(inputObj.toString()).apply {
+                put("sort", StashSceneSortMode.TRENDING.graphQlSort)
+                put("direction", StashSceneSortMode.TRENDING.defaultDirection)
+            }
+            val fallbackVars = JSONObject().apply { put("input", fallbackInput) }
+            executeGraphQL(SCENE_QUERY, fallbackVars, apiKey)
+        } else {
+            primaryResult
+        }
+
+        return effectiveDataResult.map { dataObj ->
             val queryScenesObj = dataObj.optJSONObject("queryScenes")
             val count = queryScenesObj?.optInt("count", 0) ?: 0
             val scenesArray = queryScenesObj?.optJSONArray("scenes") ?: JSONArray()
@@ -488,7 +516,8 @@ object StashDbApiService {
         apiKey: String,
         page: Int = 1,
         perPage: Int = 20,
-        blockMalePerformers: Boolean = true
+        blockMalePerformers: Boolean = true,
+        sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
     ): Result<StashSceneQueryResult> {
         val inputObj = JSONObject().apply {
             put("performers", JSONObject().apply {
@@ -497,10 +526,10 @@ object StashDbApiService {
             })
             put("page", page)
             put("per_page", perPage)
-            put("direction", "DESC")
-            put("sort", "DATE")
+            put("direction", sortMode.defaultDirection)
+            put("sort", sortMode.graphQlSort)
         }
-        return queryScenesInternal(inputObj, apiKey, blockMalePerformers)
+        return queryScenesInternal(inputObj, apiKey, blockMalePerformers, sortMode)
     }
 
     suspend fun queryStudioScenes(
@@ -509,7 +538,8 @@ object StashDbApiService {
         page: Int = 1,
         perPage: Int = 20,
         providedChildIds: List<String> = emptyList(),
-        blockMalePerformers: Boolean = true
+        blockMalePerformers: Boolean = true,
+        sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
     ): Result<StashSceneQueryResult> {
         if (apiKey.isBlank()) return Result.failure(IllegalArgumentException("StashDB API Key is required"))
         val allStudioIds = if (providedChildIds.isNotEmpty()) {
@@ -527,10 +557,10 @@ object StashDbApiService {
             })
             put("page", page)
             put("per_page", perPage)
-            put("direction", "DESC")
-            put("sort", "DATE")
+            put("direction", sortMode.defaultDirection)
+            put("sort", sortMode.graphQlSort)
         }
-        return queryScenesInternal(inputObj, apiKey, blockMalePerformers)
+        return queryScenesInternal(inputObj, apiKey, blockMalePerformers, sortMode)
     }
 
     private fun parseScenesJson(scenesArray: JSONArray, blockMalePerformers: Boolean = true): List<StashScene> {

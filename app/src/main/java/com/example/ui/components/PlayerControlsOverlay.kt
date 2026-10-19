@@ -408,7 +408,7 @@ fun PlayerControlsOverlay(
                         horizontalArrangement = Arrangement.spacedBy(if (isFullscreen) 8.dp else 6.dp)
                     ) {
                         if (isVrMode) {
-                            // In VR mode, ONLY these 3 buttons are shown (Right-to-Left: VR -> Recenter -> Gyro)
+                            // In VR mode, show VR controls + Fullscreen button (Right-to-Left: Fullscreen -> VR -> Recenter -> Gyro)
                             if (onToggleVrGyro != null) {
                                 PlayerOverlayActionButton(
                                     onClick = onToggleVrGyro,
@@ -444,6 +444,20 @@ fun PlayerControlsOverlay(
                                     activeColor = accent
                                 )
                             }
+
+                            PlayerOverlayActionButton(
+                                onClick = onToggleFullscreen,
+                                iconRes = if (isFullscreen) {
+                                    if (isLandscape) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen
+                                } else {
+                                    R.drawable.ic_player_fullscreen
+                                },
+                                contentDescription = "Fullscreen Mode",
+                                testTag = if (isFullscreen) "fullscreen_toggle_button" else "fullscreen_inline_button",
+                                isFullscreen = isFullscreen,
+                                isActive = isFullscreen,
+                                activeColor = accent
+                            )
                         } else {
                             // Standard Mode Actions (Ordered Right-to-Left: Fullscreen -> PiP -> External Player -> Setting -> VR)
                             if (isFullscreen && onToggleVrMode != null) {

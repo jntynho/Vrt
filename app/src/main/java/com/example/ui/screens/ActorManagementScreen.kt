@@ -442,17 +442,16 @@ fun ActorManagementScreen(
                     }
 
                     if (showCards) {
-                        Card(
+                        Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .vaultTopGlow(cornerRadius = 14.dp)
                                 .clip(RoundedCornerShape(14.dp))
                                 .clickable {
                                     viewModel.navigateTo(ScreenState.ActorScenes(actor.id))
                                 },
-                            elevation = CardDefaults.cardElevation(
-                                defaultElevation = if (isLight) 3.dp else 1.5.dp
-                            ),
-                            colors = CardDefaults.cardColors(containerColor = palette.cardBg)
+                            shape = RoundedCornerShape(14.dp),
+                            color = palette.cardBg
                         ) {
                             itemContent()
                         }
