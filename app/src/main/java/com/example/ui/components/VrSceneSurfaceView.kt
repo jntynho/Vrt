@@ -246,12 +246,26 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
+    /**
+     * Pans the VR camera by screen-space touch deltas in pixels.
+     * Dragging finger left pans camera right; dragging down pans camera up.
+     */
+    fun panCameraByTouch(dxPx: Float, dyPx: Float, viewportWidth: Float = 0f, viewportHeight: Float = 0f) {
+        val widthPx = if (viewportWidth > 0f) viewportWidth else width.coerceAtLeast(1).toFloat()
+        val heightPx = if (viewportHeight > 0f) viewportHeight else height.coerceAtLeast(1).toFloat()
+        val deltaYaw = -(dxPx / widthPx) * renderer.currentHorizontalFovDeg
+        val deltaPitch = (dyPx / heightPx) * renderer.currentVerticalFovDeg
+        renderer.addCameraRotationDelta(deltaYaw, deltaPitch)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x
                 lastTouchY = event.y
                 isTouchDragging = true
+                parent?.requestDisallowInterceptTouchEvent(true)
+                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (isTouchDragging) {
@@ -259,16 +273,15 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
                     val dy = event.y - lastTouchY
                     lastTouchX = event.x
                     lastTouchY = event.y
-                    val widthPx = width.coerceAtLeast(1).toFloat()
-                    val heightPx = height.coerceAtLeast(1).toFloat()
-                    // Dragging finger left pans camera right; dragging down pans camera up
-                    val deltaYaw = -(dx / widthPx) * renderer.currentHorizontalFovDeg
-                    val deltaPitch = (dy / heightPx) * renderer.currentVerticalFovDeg
-                    renderer.addCameraRotationDelta(deltaYaw, deltaPitch)
+                    panCameraByTouch(dx, dy, width.toFloat(), height.toFloat())
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    return true
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 isTouchDragging = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return true
             }
         }
         return super.onTouchEvent(event)

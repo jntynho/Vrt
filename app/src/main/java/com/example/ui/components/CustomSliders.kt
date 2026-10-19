@@ -145,8 +145,10 @@ fun SmoothFluidSlider(
     trackHeight: Dp = 10.dp,
     thumbDiameter: Dp = 22.dp,
     expandedThumbDiameter: Dp = 26.dp,
+    thumbOnlyDrag: Boolean = true,
     testTag: String? = null
 ) {
+    val currentValue by rememberUpdatedState(value)
     val currentOnValueChange by rememberUpdatedState(onValueChange)
     val currentValueRange by rememberUpdatedState(valueRange)
     val haptic = LocalHapticFeedback.current
@@ -179,34 +181,76 @@ fun SmoothFluidSlider(
         val widthPx = constraints.maxWidth.toFloat()
         val density = LocalDensity.current
         val thumbRadiusPx = with(density) { thumbDiameter.toPx() / 2f }
+        val thumbTouchHitRadiusPx = with(density) { (expandedThumbDiameter / 2 + 12.dp).toPx() }
         val usableWidth = (widthPx - thumbRadiusPx * 2f).coerceAtLeast(1f)
 
-        fun updateFromTouch(touchX: Float) {
-            val clamped = (touchX - thumbRadiusPx).coerceIn(0f, usableWidth)
+        fun updateFromThumbCenter(targetCenterPx: Float) {
+            val currentSpan = (currentValueRange.endInclusive - currentValueRange.start).coerceAtLeast(0.0001f)
+            val clamped = (targetCenterPx - thumbRadiusPx).coerceIn(0f, usableWidth)
             val newFraction = clamped / usableWidth
-            val newValue = currentValueRange.start + newFraction * span
+            val newValue = currentValueRange.start + newFraction * currentSpan
             currentOnValueChange(newValue)
         }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(usableWidth, span, currentValueRange.start) {
+                .pointerInput(usableWidth, thumbOnlyDrag, thumbTouchHitRadiusPx) {
+                    val touchSlop = viewConfiguration.touchSlop
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        val activeSpan = (currentValueRange.endInclusive - currentValueRange.start).coerceAtLeast(0.0001f)
+                        val activeFraction = ((currentValue - currentValueRange.start) / activeSpan).coerceIn(0f, 1f)
+                        val initialThumbCenterPx = thumbRadiusPx + activeFraction * usableWidth
+
+                        val distanceFromThumb = kotlin.math.abs(down.position.x - initialThumbCenterPx)
+                        if (thumbOnlyDrag && distanceFromThumb > thumbTouchHitRadiusPx) {
+                            // Ignore touches outside the thumb/circle so vertical scrolling works without conflict
+                            return@awaitEachGesture
+                        }
+
+                        val grabOffset = if (thumbOnlyDrag) {
+                            down.position.x - initialThumbCenterPx
+                        } else {
+                            0f
+                        }
+
                         isDragging = true
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        updateFromTouch(down.position.x)
-                        down.consume()
-
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
-                            change.consume()
-                            updateFromTouch(change.position.x)
+                        if (!thumbOnlyDrag) {
+                            updateFromThumbCenter(down.position.x)
+                            down.consume()
                         }
-                        isDragging = false
+
+                        var dragLocked = !thumbOnlyDrag
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                if (!dragLocked && change.isConsumed) break
+
+                                if (!dragLocked) {
+                                    val dx = kotlin.math.abs(change.position.x - down.position.x)
+                                    val dy = kotlin.math.abs(change.position.y - down.position.y)
+
+                                    if (dy > dx * 1.2f && dy > touchSlop * 0.5f) {
+                                        // User is scrolling vertically; release thumb and let parent scroll
+                                        break
+                                    }
+                                    if (dx >= dy && dx > 1.5f) {
+                                        dragLocked = true
+                                    }
+                                }
+
+                                if (dragLocked) {
+                                    change.consume()
+                                    updateFromThumbCenter(change.position.x - grabOffset)
+                                }
+                            }
+                        } finally {
+                            isDragging = false
+                        }
                     }
                 },
             contentAlignment = Alignment.CenterStart

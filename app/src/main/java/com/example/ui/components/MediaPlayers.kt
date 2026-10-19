@@ -462,6 +462,7 @@ fun CoreMediaPlayer(
     } else {
         val currentDuration by rememberUpdatedState(duration)
         val currentExoPlayer by rememberUpdatedState(activeExoPlayer)
+        val currentSphericalView by rememberUpdatedState(sphericalViewRef)
         var vrSingleTapJob by remember { mutableStateOf<Job?>(null) }
         var lastVrTapTime by remember { mutableLongStateOf(0L) }
         var lastVrTapX by remember { mutableFloatStateOf(0f) }
@@ -469,6 +470,7 @@ fun CoreMediaPlayer(
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 val startPos = down.position
+                var lastPos = startPos
                 val startTime = System.currentTimeMillis()
                 var hasDragged = false
 
@@ -476,10 +478,21 @@ fun CoreMediaPlayer(
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
                     if (change.pressed) {
-                        val dist = (change.position - startPos).getDistance()
-                        if (dist > 16f) {
+                        val currentPointerPos = change.position
+                        val dist = (currentPointerPos - startPos).getDistance()
+                        if (dist > 10f) {
                             hasDragged = true
+                            val dx = currentPointerPos.x - lastPos.x
+                            val dy = currentPointerPos.y - lastPos.y
+                            currentSphericalView?.panCameraByTouch(
+                                dxPx = dx,
+                                dyPx = dy,
+                                viewportWidth = size.width.toFloat(),
+                                viewportHeight = size.height.toFloat()
+                            )
+                            change.consume()
                         }
+                        lastPos = currentPointerPos
                     } else {
                         val elapsed = System.currentTimeMillis() - startTime
                         val dist = (change.position - startPos).getDistance()
