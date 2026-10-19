@@ -72,6 +72,7 @@ fun LiquidGlassNavigationBar(
     barHeightDp: Int = 70,
     transparency: Float = 0.65f,
     blurRadiusDp: Int = 24,
+    activeTabBlurDp: Int = 16,
     activeTabIntensity: Float = 0.6f
 ) {
     val palette = LocalVaultPalette.current
@@ -108,6 +109,9 @@ fun LiquidGlassNavigationBar(
         Color(0xFF3C404E).copy(alpha = 0.80f)
     }
 
+    val clampedTransparency = transparency.coerceIn(0f, 1f)
+    val shadowVisibilityFactor = (1f - clampedTransparency * 0.55f).coerceIn(0.35f, 1f)
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -126,8 +130,16 @@ fun LiquidGlassNavigationBar(
                 .shadow(
                     elevation = if (isDark) 14.dp else 18.dp,
                     shape = barShape,
-                    ambientColor = if (isDark) Color.Black.copy(alpha = 0.40f) else Color(0x241E2235),
-                    spotColor = if (isDark) accent.copy(alpha = 0.22f) else Color(0x1E000000)
+                    ambientColor = if (isDark) {
+                        Color.Black.copy(alpha = 0.40f * shadowVisibilityFactor)
+                    } else {
+                        Color(0xFF1E2235).copy(alpha = 0.14f * shadowVisibilityFactor)
+                    },
+                    spotColor = if (isDark) {
+                        accent.copy(alpha = 0.22f * shadowVisibilityFactor)
+                    } else {
+                        Color.Black.copy(alpha = 0.12f * shadowVisibilityFactor)
+                    }
                 )
         ) {
             val totalWidthPx = constraints.maxWidth.toFloat()
@@ -137,16 +149,18 @@ fun LiquidGlassNavigationBar(
 
             val effectiveIndex = if (hasValidSelection) selectedIndex.coerceIn(0, items.lastIndex) else 0
             val targetCenterX = (effectiveIndex + 0.5f) * itemWidthPx
-            val indicatorHeight = barHeight - if (isLandscape) 8.dp else 12.dp
+            val indicatorHeight = barHeight - if (isLandscape) 6.dp else 10.dp
 
             val positionAnim = remember { Animatable(targetCenterX) }
+            val dragStretchAnim = remember { Animatable(0f) }
             var isInitialized by remember { mutableStateOf(false) }
             var lastWidthPx by remember { mutableFloatStateOf(totalWidthPx) }
 
             var isDragging by remember { mutableStateOf(false) }
-            var dragOffsetValue by remember { mutableFloatStateOf(0f) }
             var pressedIndex by remember { mutableStateOf<Int?>(null) }
             var previewIndex by remember { mutableStateOf<Int?>(null) }
+            var dragInstantStretch by remember { mutableFloatStateOf(0f) }
+            var motionDirection by remember { mutableFloatStateOf(0f) }
 
             // 1. Initial Launch Snap & Orientation Change Instant Snap (Prevents unwanted fly-in animation)
             LaunchedEffect(totalWidthPx, effectiveIndex) {
@@ -179,12 +193,14 @@ fun LiquidGlassNavigationBar(
 
             // 3. Velocity-Coupled Directional Fluid Physics (Squash & Stretch)
             val currentVelocity = positionAnim.velocity
-            val velocityStretch = (1.0f + (abs(currentVelocity) / 3000f).coerceIn(0f, 0.20f))
-            val interactiveDragStretch = if (isDragging && dragOffsetValue != 0f) {
-                (1.0f + (abs(dragOffsetValue) / 320f).coerceIn(0f, 0.16f))
-            } else {
-                1.0f
+            val autoMotionDirection = when {
+                currentVelocity > 60f -> 1f
+                currentVelocity < -60f -> -1f
+                else -> 0f
             }
+            val effectiveMotionDirection = if (isDragging) motionDirection else autoMotionDirection
+            val velocityStretch = (1.0f + (abs(currentVelocity) / 2800f).coerceIn(0f, 0.22f))
+            val interactiveDragStretch = 1.0f + dragInstantStretch
             val stretchX = maxOf(velocityStretch, interactiveDragStretch)
             val squashY = 1.0f / sqrt(stretchX)
 
@@ -195,7 +211,7 @@ fun LiquidGlassNavigationBar(
                 accentColor = accent,
                 hazeState = hazeState,
                 blurRadius = blurRadiusDp.coerceIn(0, 40).dp,
-                transparency = transparency.coerceIn(0f, 1f),
+                transparency = clampedTransparency,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -204,34 +220,47 @@ fun LiquidGlassNavigationBar(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(barShape)
-                    .padding(vertical = if (isLandscape) 4.dp else 6.dp)
+                    .padding(vertical = if (isLandscape) 3.dp else 4.dp)
             ) {
                 LiquidGlassSelectionIndicator(
                     currentCenterX = positionAnim.value,
                     stretchX = stretchX,
                     squashY = squashY,
+                    motionDirection = effectiveMotionDirection,
                     itemWidth = itemWidthDp,
                     height = indicatorHeight,
                     accentColor = accent,
                     isDarkTheme = isDark,
-                    isVisible = hasValidSelection,
+                    isVisible = hasValidSelection || isDragging,
                     pulseTrigger = pulseTrigger,
                     intensity = activeTabIntensity,
+                    activeTabBlurDp = activeTabBlurDp,
                     modifier = Modifier.align(Alignment.CenterStart)
                 )
             }
 
             val currentSelectedIndex by rememberUpdatedState(selectedIndex)
             val currentEffectiveIndex by rememberUpdatedState(effectiveIndex)
+            val currentHasValidSelection by rememberUpdatedState(hasValidSelection)
             val currentOnItemSelected by rememberUpdatedState(onItemSelected)
             val currentOnItemReselected by rememberUpdatedState(onItemReselected)
-            val currentOnItemLongPressed by rememberUpdatedState(onItemLongPressed)
+
+            val triggerTabAction: (Int) -> Unit = { targetIdx ->
+                val validIdx = targetIdx.coerceIn(0, items.lastIndex)
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                pulseTrigger++
+                if (validIdx != currentSelectedIndex) {
+                    currentOnItemSelected(items[validIdx])
+                } else {
+                    currentOnItemReselected?.invoke(items[validIdx])
+                }
+            }
 
             // LAYER 3: 100% Crisp Interactive Navigation Items with Proximity-Based Synchronization
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(items.size, totalWidthPx, selectedIndex) {
+                    .pointerInput(items.size, totalWidthPx) {
                         val touchSlop = viewConfiguration.touchSlop
                         val minCenterX = 0.5f * itemWidthPx
                         val maxCenterX = (itemCount - 0.5f) * itemWidthPx
@@ -239,88 +268,96 @@ fun LiquidGlassNavigationBar(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val downX = down.position.x
-                            val downTime = System.currentTimeMillis()
+                            var prevTouchX = downX
                             val startIndex = (downX / itemWidthPx).toInt().coerceIn(0, items.lastIndex)
 
                             pressedIndex = startIndex
                             var hasDragStarted = false
-                            var isLongPressTriggered = false
                             var lastHapticIndex = startIndex
                             val gestureStartIndicatorX = positionAnim.value
-                            val isTouchingIndicator = abs(downX - gestureStartIndicatorX) <= (itemWidthPx * 0.75f)
+                            val isTouchingIndicator = currentHasValidSelection &&
+                                abs(downX - gestureStartIndicatorX) <= (itemWidthPx * 0.75f)
+                            var hasCaughtUpToFinger = isTouchingIndicator
 
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id }
-                                if (change == null || !change.pressed) {
-                                    break
-                                }
-
-                                val dx = change.position.x - downX
-
-                                if (!hasDragStarted) {
-                                    if (abs(dx) > touchSlop) {
-                                        hasDragStarted = true
-                                        isDragging = true
-                                        pressedIndex = null
-                                        change.consume()
-                                    } else if (!isLongPressTriggered && startIndex == currentEffectiveIndex && (System.currentTimeMillis() - downTime) > 400L) {
-                                        isLongPressTriggered = true
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        currentOnItemLongPressed?.invoke(items[currentEffectiveIndex])
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null || !change.pressed) {
+                                        break
                                     }
-                                } else {
-                                    change.consume()
+
                                     val currentTouchX = change.position.x
-                                    val targetX = if (isTouchingIndicator) {
-                                        gestureStartIndicatorX + (currentTouchX - downX)
-                                    } else {
-                                        currentTouchX
-                                    }
-                                    val clampedCenterX = targetX.coerceIn(minCenterX, maxCenterX)
+                                    val dxFromStart = currentTouchX - downX
+                                    val frameDeltaX = currentTouchX - prevTouchX
+                                    prevTouchX = currentTouchX
 
-                                    dragOffsetValue = clampedCenterX - gestureStartIndicatorX
+                                    if (!hasDragStarted) {
+                                        if (abs(dxFromStart) > touchSlop) {
+                                            hasDragStarted = true
+                                            isDragging = true
+                                            pressedIndex = null
+                                            previewIndex = startIndex
+                                            change.consume()
+                                        }
+                                    } else {
+                                        change.consume()
+                                        if (abs(frameDeltaX) > 0.5f) {
+                                            motionDirection = if (frameDeltaX > 0f) 1f else -1f
+                                        }
+                                        val targetX = if (isTouchingIndicator) {
+                                            gestureStartIndicatorX + dxFromStart
+                                        } else {
+                                            currentTouchX
+                                        }
+                                        val clampedCenterX = targetX.coerceIn(minCenterX, maxCenterX)
+                                        dragInstantStretch = (abs(frameDeltaX) / 24f).coerceIn(0f, 0.20f)
+
+                                        // Smooth catch-up and direct drag tracking
+                                        coroutineScope.launch {
+                                            if (!hasCaughtUpToFinger) {
+                                                val currentVal = positionAnim.value
+                                                val step = (clampedCenterX - currentVal) * 0.38f
+                                                if (abs(currentVal - clampedCenterX) < 6f) {
+                                                    hasCaughtUpToFinger = true
+                                                    positionAnim.snapTo(clampedCenterX)
+                                                } else {
+                                                    positionAnim.snapTo(currentVal + step)
+                                                }
+                                            } else {
+                                                positionAnim.snapTo(clampedCenterX)
+                                            }
+                                        }
+
+                                        val currentHoverIndex = ((clampedCenterX - minCenterX) / itemWidthPx).roundToInt().coerceIn(0, items.lastIndex)
+                                        if (currentHoverIndex != lastHapticIndex) {
+                                            lastHapticIndex = currentHoverIndex
+                                            previewIndex = currentHoverIndex
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        }
+                                    }
+                                }
+                            } finally {
+                                pressedIndex = null
+                                if (hasDragStarted) {
+                                    val finalIndex = (previewIndex ?: ((positionAnim.value - minCenterX) / itemWidthPx).roundToInt())
+                                        .coerceIn(0, items.lastIndex)
+                                    previewIndex = null
+                                    isDragging = false
+                                    dragInstantStretch = 0f
                                     coroutineScope.launch {
-                                        positionAnim.snapTo(clampedCenterX)
+                                        positionAnim.animateTo(
+                                            targetValue = (finalIndex + 0.5f) * itemWidthPx,
+                                            animationSpec = spring(
+                                                dampingRatio = 0.82f,
+                                                stiffness = 380f
+                                            )
+                                        )
                                     }
-
-                                    val currentHoverIndex = ((clampedCenterX - minCenterX) / itemWidthPx).roundToInt().coerceIn(0, items.lastIndex)
-                                    if (currentHoverIndex != lastHapticIndex) {
-                                        lastHapticIndex = currentHoverIndex
-                                        previewIndex = currentHoverIndex
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    }
-                                }
-                            }
-
-                            // Pointer lifted (Up) or cancelled
-                            pressedIndex = null
-                            if (hasDragStarted) {
-                                val finalIndex = ((positionAnim.value - minCenterX) / itemWidthPx).roundToInt().coerceIn(0, items.lastIndex)
-                                previewIndex = null
-                                isDragging = false
-                                dragOffsetValue = 0f
-
-                                if (finalIndex != currentSelectedIndex) {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    currentOnItemSelected(items[finalIndex])
+                                    triggerTabAction(finalIndex)
                                 } else {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    pulseTrigger++
-                                    currentOnItemReselected?.invoke(items[finalIndex])
-                                }
-                            } else if (!isLongPressTriggered) {
-                                val elapsed = System.currentTimeMillis() - downTime
-                                if (elapsed < 600L) {
                                     val tappedIndex = (downX / itemWidthPx).toInt().coerceIn(0, items.lastIndex)
-                                    if (tappedIndex != currentSelectedIndex) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        currentOnItemSelected(items[tappedIndex])
-                                    } else {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        pulseTrigger++
-                                        currentOnItemReselected?.invoke(items[tappedIndex])
-                                    }
+                                    triggerTabAction(tappedIndex)
                                 }
                             }
                         }
@@ -331,8 +368,16 @@ fun LiquidGlassNavigationBar(
                 items.forEachIndexed { index, item ->
                     val itemCenterXPx = (index + 0.5f) * itemWidthPx
                     val distanceToIndicator = abs(currentIndicatorX - itemCenterXPx)
-                    val proximity = (1.0f - (distanceToIndicator / itemWidthPx)).coerceIn(0f, 1f)
-                    val isItemSelected = if (isDragging && previewIndex != null) index == previewIndex else index == effectiveIndex
+                    val proximity = if (hasValidSelection || isDragging) {
+                        (1.0f - (distanceToIndicator / itemWidthPx)).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    val isItemSelected = when {
+                        isDragging && previewIndex != null -> index == previewIndex
+                        hasValidSelection -> index == effectiveIndex
+                        else -> false
+                    }
                     val isItemPressed = pressedIndex == index
 
                     LiquidGlassNavigationItem(
@@ -343,16 +388,7 @@ fun LiquidGlassNavigationBar(
                         unselectedColor = unselectedItemColor,
                         proximity = proximity,
                         pulseTrigger = pulseTrigger,
-                        onClick = {
-                            if (index != currentSelectedIndex) {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                currentOnItemSelected(item)
-                            } else {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                pulseTrigger++
-                                currentOnItemReselected?.invoke(item)
-                            }
-                        },
+                        onClick = { triggerTabAction(index) },
                         isPressed = isItemPressed
                     )
                 }

@@ -54,12 +54,10 @@ val LocalHazeState = compositionLocalOf<HazeState?> { null }
 private fun getTabOrder(screen: ScreenState): Int? {
     return when (screen) {
         is ScreenState.Home -> 0
-        is ScreenState.Bookmarks -> 1
-        is ScreenState.Actors, is ScreenState.ActorScenes -> 2
-        is ScreenState.Studios, is ScreenState.StudioScenes -> 3
-        is ScreenState.StashDb -> 4
-        is ScreenState.Kanime, is ScreenState.KanimeEpisodes -> 5
-        is ScreenState.Settings -> 6
+        is ScreenState.Actors, is ScreenState.ActorScenes -> 1
+        is ScreenState.Studios, is ScreenState.StudioScenes -> 2
+        is ScreenState.StashDb -> 3
+        is ScreenState.Settings -> 4
         else -> null
     }
 }
@@ -167,216 +165,106 @@ fun MainAppShell(viewModel: MainViewModel) {
                             HorizontalDivider(color = palette.border)
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            val isHomeSelected = currentScreen is ScreenState.Home
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_home),
-                                        contentDescription = "Home",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Home", fontWeight = if (isHomeSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isHomeSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Home)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            val drawerItemColors = NavigationDrawerItemDefaults.colors(
+                                selectedContainerColor = accent.copy(alpha = 0.18f),
+                                selectedTextColor = accent,
+                                selectedIconColor = accent,
+                                unselectedTextColor = palette.textPrimary,
+                                unselectedIconColor = palette.textSecondary
                             )
 
-                            val isActorsSelected = currentScreen is ScreenState.Actors || currentScreen is ScreenState.ActorScenes
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_actor),
-                                        contentDescription = "Actors",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Actors", fontWeight = if (isActorsSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isActorsSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Actors)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            @Composable
+                            fun VaultDrawerItem(
+                                label: String,
+                                iconRes: Int,
+                                selected: Boolean,
+                                targetScreen: ScreenState
+                            ) {
+                                NavigationDrawerItem(
+                                    icon = {
+                                        Icon(
+                                            painter = painterResource(id = iconRes),
+                                            contentDescription = label,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = label,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                    },
+                                    selected = selected,
+                                    onClick = {
+                                        viewModel.navigateTo(targetScreen)
+                                        coroutineScope.launch { drawerState.close() }
+                                    },
+                                    colors = drawerItemColors,
+                                    shape = CircleShape,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            }
+
+                            VaultDrawerItem(
+                                label = "Home",
+                                iconRes = R.drawable.ic_nav_home,
+                                selected = currentScreen is ScreenState.Home,
+                                targetScreen = ScreenState.Home
                             )
 
-                            val isStudiosSelected = currentScreen is ScreenState.Studios || currentScreen is ScreenState.StudioScenes
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_studio),
-                                        contentDescription = "Studios",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Studios", fontWeight = if (isStudiosSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isStudiosSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Studios)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "Actors",
+                                iconRes = R.drawable.ic_nav_actor,
+                                selected = currentScreen is ScreenState.Actors || currentScreen is ScreenState.ActorScenes,
+                                targetScreen = ScreenState.Actors
                             )
 
-                            val isBookmarksSelected = currentScreen is ScreenState.Bookmarks
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_bookmark),
-                                        contentDescription = "Bookmarks",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Bookmarks", fontWeight = if (isBookmarksSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isBookmarksSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Bookmarks)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "Studios",
+                                iconRes = R.drawable.ic_nav_studio,
+                                selected = currentScreen is ScreenState.Studios || currentScreen is ScreenState.StudioScenes,
+                                targetScreen = ScreenState.Studios
                             )
 
-                            val isStashDbSelected = currentScreen is ScreenState.StashDb
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_stashdb),
-                                        contentDescription = "StashDB",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("StashDB", fontWeight = if (isStashDbSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isStashDbSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.StashDb)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "Bookmarks",
+                                iconRes = R.drawable.ic_nav_bookmark,
+                                selected = currentScreen is ScreenState.Bookmarks,
+                                targetScreen = ScreenState.Bookmarks
                             )
 
-                            val isOnlyhavenSelected = currentScreen is ScreenState.Onlyhaven
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_onlyhaven),
-                                        contentDescription = "Onlyhaven",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Onlyhaven", fontWeight = if (isOnlyhavenSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isOnlyhavenSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Onlyhaven)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "StashDB",
+                                iconRes = R.drawable.ic_nav_stashdb,
+                                selected = currentScreen is ScreenState.StashDb,
+                                targetScreen = ScreenState.StashDb
                             )
 
-                            val isKanimeSelected = currentScreen is ScreenState.Kanime
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_kanime),
-                                        contentDescription = "Kanime",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Kanime", fontWeight = if (isKanimeSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isKanimeSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Kanime)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "Onlyhaven",
+                                iconRes = R.drawable.ic_onlyhaven,
+                                selected = currentScreen is ScreenState.Onlyhaven ||
+                                    currentScreen is ScreenState.OnlyhavenCreatorDetails ||
+                                    currentScreen is ScreenState.OnlyhavenSavedCreators,
+                                targetScreen = ScreenState.Onlyhaven
+                            )
+
+                            VaultDrawerItem(
+                                label = "Kanime",
+                                iconRes = R.drawable.ic_kanime,
+                                selected = currentScreen is ScreenState.Kanime || currentScreen is ScreenState.KanimeEpisodes,
+                                targetScreen = ScreenState.Kanime
                             )
 
                             Spacer(modifier = Modifier.weight(1f))
                             HorizontalDivider(color = palette.border)
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            val isSettingsSelected = currentScreen is ScreenState.Settings
-                            NavigationDrawerItem(
-                                icon = {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_nav_settings),
-                                        contentDescription = "Settings",
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                },
-                                label = { Text("Settings", fontWeight = if (isSettingsSelected) FontWeight.SemiBold else FontWeight.Normal) },
-                                selected = isSettingsSelected,
-                                onClick = {
-                                    viewModel.navigateTo(ScreenState.Settings)
-                                    coroutineScope.launch { drawerState.close() }
-                                },
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = accent.copy(alpha = 0.18f),
-                                    selectedTextColor = accent,
-                                    selectedIconColor = accent,
-                                    unselectedTextColor = palette.textPrimary,
-                                    unselectedIconColor = palette.textSecondary
-                                ),
-                                shape = CircleShape,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                            VaultDrawerItem(
+                                label = "Settings",
+                                iconRes = R.drawable.ic_nav_settings,
+                                selected = currentScreen is ScreenState.Settings,
+                                targetScreen = ScreenState.Settings
                             )
                         }
                     }
@@ -440,12 +328,10 @@ fun MainAppShell(viewModel: MainViewModel) {
                                 } else {
                                     val initialTab = getTabOrder(initialState)
                                     val targetTab = getTabOrder(targetState)
-                                    val isBack = if (navDirection == MainViewModel.NavigationDirection.BACK) {
-                                        true
-                                    } else if (initialTab != null && targetTab != null && initialTab != targetTab) {
-                                        targetTab < initialTab
-                                    } else {
-                                        navDirection == MainViewModel.NavigationDirection.BACK
+                                    val isBack = when {
+                                        navDirection == MainViewModel.NavigationDirection.BACK -> true
+                                        initialTab != null && targetTab != null && initialTab != targetTab -> targetTab < initialTab
+                                        else -> false
                                     }
 
                                     if (isBack) {
@@ -487,8 +373,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                                     onOpenDrawer = openDrawerLambda
                                 )
                                 is ScreenState.Bookmarks -> BookmarksScreen(
-                                    viewModel = viewModel,
-                                    onOpenDrawer = openDrawerLambda
+                                    viewModel = viewModel
                                 )
                                 is ScreenState.AddEditLink -> AddEditLinkScreen(viewModel, screen.linkId)
                                 is ScreenState.Actors -> ActorManagementScreen(viewModel)
@@ -574,6 +459,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                                 barHeightDp = currentSettings.navBarHeightDp,
                                 transparency = currentSettings.navBarTransparency,
                                 blurRadiusDp = currentSettings.navBarBlurDp,
+                                activeTabBlurDp = currentSettings.navBarActiveTabBlurDp,
                                 activeTabIntensity = currentSettings.navBarActiveTabIntensity
                             )
                         }

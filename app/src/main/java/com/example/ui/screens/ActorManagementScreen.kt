@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -336,20 +337,18 @@ fun ActorManagementScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredActors, key = { it.id }) { actor ->
-                    // Resilient scene count: lookup by ID first, then fallback to actor name
-                    val sceneCount = actorSceneCounts[actor.id] ?: actorSceneCounts[actor.name] ?: 0
                     val itemContent = @Composable {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 18.dp, bottom = 18.dp, start = 8.dp, end = 8.dp),
+                                .padding(top = 16.dp, bottom = 14.dp, start = 8.dp, end = 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             val isBetaTest = LocalBetaTestPrivacy.current
 
                             Box(
                                 modifier = Modifier
-                                    .size(72.dp)
+                                    .size(76.dp)
                                     .clip(CircleShape)
                                     .background(palette.surface),
                                 contentAlignment = Alignment.Center
@@ -359,7 +358,7 @@ fun ActorManagementScreen(
                                     val imageRequest = remember(actor.imageUrl, context) {
                                         ImageRequest.Builder(context)
                                             .data(actor.imageUrl)
-                                            .size(200, 200)
+                                            .size(220, 220)
                                             .crossfade(true)
                                             .crossfade(150)
                                             .build()
@@ -408,7 +407,7 @@ fun ActorManagementScreen(
                                             painter = painterResource(id = R.drawable.ic_nav_actor),
                                             contentDescription = null,
                                             tint = palette.textSecondary.copy(alpha = 0.9f),
-                                            modifier = Modifier.size(36.dp)
+                                            modifier = Modifier.size(38.dp)
                                         )
                                     }
                                 }
@@ -425,18 +424,11 @@ fun ActorManagementScreen(
                             Text(
                                 text = actor.name,
                                 color = palette.textPrimary,
-                                fontSize = 14.sp,
+                                fontSize = 13.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-
-                            Spacer(modifier = Modifier.height(2.dp))
-
-                            Text(
-                                text = "$sceneCount scenes",
-                                color = palette.textMuted,
-                                fontSize = 11.sp
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }

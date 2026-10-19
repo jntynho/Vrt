@@ -45,13 +45,11 @@ fun HomeTopAppBar(
     onNavigateBack: () -> Unit,
     onAddScene: () -> Unit,
     onEditActor: () -> Unit = {},
-    onEditStudio: () -> Unit = {},
-    onSearchActorStash: () -> Unit = {},
-    onSearchStudioStash: () -> Unit = {}
+    onEditStudio: () -> Unit = {}
 ) {
     val palette = LocalVaultPalette.current
     val accent = LocalAccentColor.current
-    var isSearchExpanded by remember { mutableStateOf(false) }
+    var isSearchExpanded by remember { mutableStateOf(searchQuery.isNotEmpty()) }
     var showSortMenu by remember { mutableStateOf(false) }
 
     val headerTitle = when {

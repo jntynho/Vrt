@@ -75,8 +75,7 @@ data class ActiveVideoPlayback(
     val subtitles: List<SubtitleTrack> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
     val initialPositionMs: Long = 0L,
-    val startInLandscape: Boolean = false,
-    val startInVr: Boolean = false
+    val startInLandscape: Boolean = false
 )
 
 data class ActiveInlineVideoPlayback(
@@ -353,22 +352,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getScrollPosition(key: String): Pair<Int, Int> = scrollPositionRegistry[key] ?: Pair(0, 0)
 
-    fun clearScrollPosition(key: String) {
-        scrollPositionRegistry.remove(key)
-    }
-
-    var homeScrollIndex: Int
-        get() = getScrollPosition("feed_home").first
-        set(value) = saveScrollPosition("feed_home", value, getScrollPosition("feed_home").second)
-
-    var homeScrollOffset: Int
-        get() = getScrollPosition("feed_home").second
-        set(value) = saveScrollPosition("feed_home", getScrollPosition("feed_home").first, value)
-
     var initialSettingsSection: String? = null
 
+    private fun onScreenChanged(previous: ScreenState, next: ScreenState) {
+        if (previous != next) {
+            closeInlineVideo()
+            val isSameFeedContext = (previous is ScreenState.AddEditLink || next is ScreenState.AddEditLink)
+            if (!isSameFeedContext && searchQuery.value.isNotEmpty()) {
+                searchQuery.value = ""
+            }
+        }
+    }
+
     fun navigateTo(screen: ScreenState) {
-        if (screen == _screenState.value) return
+        val previous = _screenState.value
+        if (screen == previous) return
+        onScreenChanged(previous, screen)
         synchronized(screenStack) {
             val existingIndex = screenStack.indexOf(screen)
             if (existingIndex >= 0 && existingIndex < screenStack.size - 1) {
@@ -385,16 +384,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun navigateBack(): Boolean {
+        val previous = _screenState.value
         synchronized(screenStack) {
             if (screenStack.size > 1) {
                 _navDirection.value = NavigationDirection.BACK
                 screenStack.removeAt(screenStack.size - 1)
-                _screenState.value = screenStack.last()
+                val target = screenStack.last()
+                onScreenChanged(previous, target)
+                _screenState.value = target
                 return true
-            } else if (_screenState.value != ScreenState.Home) {
+            } else if (previous != ScreenState.Home) {
                 _navDirection.value = NavigationDirection.BACK
                 screenStack.clear()
                 screenStack.add(ScreenState.Home)
+                onScreenChanged(previous, ScreenState.Home)
                 _screenState.value = ScreenState.Home
                 return true
             }
@@ -429,7 +432,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cardId: String? = null,
         initialPositionMs: Long = 0L,
         startInLandscape: Boolean = false,
-        startInVr: Boolean = false,
         scene: com.example.data.local.entity.LinkEntity? = null,
         subtitles: List<SubtitleTrack> = emptyList()
     ) {
@@ -545,7 +547,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     primaryQuality.url.contains("torbox.app", ignoreCase = true)
 
                 val displayTitle = if (resolved.title.isNotBlank() && resolved.title != "Media Stream") resolved.title else title
-                val shouldPlayInline = cardId != null && !startInVr
+                val shouldPlayInline = cardId != null
 
                 val combinedSubtitles = (resolved.subtitles + subtitles).distinctBy { it.url }
 
@@ -566,8 +568,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             subtitles = combinedSubtitles,
                             headers = resolved.headers,
                             initialPositionMs = initialPositionMs,
-                            startInLandscape = startInLandscape,
-                            startInVr = startInVr
+                            startInLandscape = startInLandscape
                         )
                     }
                 } else {
@@ -595,8 +596,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     subtitles = combinedSubtitles,
                                     headers = resolved.headers,
                                     initialPositionMs = initialPositionMs,
-                                    startInLandscape = startInLandscape,
-                                    startInVr = startInVr
+                                    startInLandscape = startInLandscape
                                 )
                             }
                         }
@@ -619,8 +619,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         subtitles = combinedSubtitles,
                                         headers = resolved.headers,
                                         initialPositionMs = initialPositionMs,
-                                        startInLandscape = startInLandscape,
-                                        startInVr = startInVr
+                                        startInLandscape = startInLandscape
                                     )
                                 }
                             } else {
@@ -634,13 +633,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _videoResolutionError.value = e.message ?: "Failed to resolve media stream"
             } finally {
                 _resolvingVideoStatus.value = null
-                _resolvingCardId.value = null
+                if (_videoResolutionError.value == null) {
+                    _resolvingCardId.value = null
+                }
             }
         }
     }
 
     fun dismissVideoError() {
         _videoResolutionError.value = null
+        _resolvingCardId.value = null
     }
 
     fun closeVideo() {
@@ -653,6 +655,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 cardId = inlineId,
                 title = currentVideo.title,
                 qualities = currentVideo.qualities,
+                subtitles = currentVideo.subtitles,
                 headers = currentVideo.headers
             )
             lastInlineCardId = null
@@ -692,6 +695,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _activeVideo.value = ActiveVideoPlayback(
                 title = inline.title,
                 qualities = inline.qualities,
+                subtitles = inline.subtitles,
                 headers = inline.headers,
                 initialPositionMs = currentPositionMs,
                 startInLandscape = startInLandscape
@@ -1489,21 +1493,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSelectedStashScenes(onComplete: (Int) -> Unit) =
         saveSelectedStashScenesWithProgress { savedCount, _ -> onComplete(savedCount) }
 
-    // Search, Tabs, Filter and Sort
+    // Search and Sort
     val searchQuery = MutableStateFlow("")
     val sortMode = MutableStateFlow(SortMode.CARD_NEWEST)
-    val homeTab = MutableStateFlow(0)
     val bookmarkedIds = MutableStateFlow<Set<String>>(emptySet())
-    val lastFeedRefresh = MutableStateFlow(System.currentTimeMillis())
-    val viewFilter = MutableStateFlow("ALL")
 
     fun toggleBookmark(id: String) {
         val curr = bookmarkedIds.value
         bookmarkedIds.value = if (curr.contains(id)) curr - id else curr + id
-    }
-
-    fun refreshFeed() {
-        lastFeedRefresh.value = System.currentTimeMillis()
     }
 
     // Data Flows

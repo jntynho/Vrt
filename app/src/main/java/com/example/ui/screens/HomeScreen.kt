@@ -22,9 +22,8 @@ import com.example.data.local.entity.ActorEntity
 import com.example.data.local.entity.StudioEntity
 import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
-import com.example.ui.SortMode
 import com.example.ui.components.*
-import kotlinx.coroutines.launch
+import com.example.ui.theme.LocalVaultPalette
 
 @Composable
 fun HomeScreen(
@@ -32,14 +31,13 @@ fun HomeScreen(
     onOpenDrawer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val coroutineScope = rememberCoroutineScope()
+    val palette = LocalVaultPalette.current
     val links by viewModel.filteredLinks.collectAsStateWithLifecycle()
     val actors by viewModel.allActors.collectAsStateWithLifecycle()
     val studios by viewModel.allStudios.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val currentSort by viewModel.sortMode.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedIds.collectAsStateWithLifecycle()
-    val viewFilter by viewModel.viewFilter.collectAsStateWithLifecycle()
     val resolvingStatus by viewModel.resolvingVideoStatus.collectAsStateWithLifecycle()
     val resolvingCardId by viewModel.resolvingCardId.collectAsStateWithLifecycle()
     val videoResolutionError by viewModel.videoResolutionError.collectAsStateWithLifecycle()
@@ -64,8 +62,9 @@ fun HomeScreen(
         } else null
     }
 
-    val displayedLinks = remember(links, currentScreen, targetActor, targetStudio, currentSort) {
-        val filtered = when (currentScreen) {
+    // links (viewModel.filteredLinks) is already sorted on Dispatchers.Default; filtering preserves sort order
+    val displayedLinks = remember(links, currentScreen, targetActor, targetStudio) {
+        when (currentScreen) {
             is ScreenState.ActorScenes -> {
                 val actorId = (currentScreen as ScreenState.ActorScenes).actorId
                 links.filter { it.actorIds.contains(actorId) || (targetActor != null && it.actorIds.contains(targetActor.name)) }
@@ -76,41 +75,28 @@ fun HomeScreen(
             }
             else -> links
         }
-        when (currentSort) {
-            SortMode.CARD_NEWEST, SortMode.NEWEST -> filtered.sortedByDescending { it.assignedDate ?: it.createdAt }
-            SortMode.CARD_OLDEST, SortMode.OLDEST -> filtered.sortedBy { it.assignedDate ?: it.createdAt }
-            SortMode.RECENTLY_ADDED -> filtered.sortedByDescending { it.createdAt }
-            SortMode.OLDEST_ADDED -> filtered.sortedBy { it.createdAt }
-            SortMode.TITLE_AZ -> filtered.sortedBy { it.title.lowercase() }
-            SortMode.TITLE_ZA -> filtered.sortedByDescending { it.title.lowercase() }
-        }
     }
 
-    // Precomputed Fast Lookup Maps
-    val actorsMap = remember(actors) {
-        val map = mutableMapOf<String, String>()
+    // Single-Pass Precomputed Fast Lookup Maps
+    val (actorsMap, fullActorsMap) = remember(actors) {
+        val nameMap = mutableMapOf<String, String>()
+        val entityMap = mutableMapOf<String, ActorEntity>()
         actors.forEach { actor ->
-            map[actor.id] = actor.name
-            map[actor.name] = actor.name
-            map[actor.name.trim().lowercase()] = actor.name
+            val lowerName = actor.name.trim().lowercase()
+            nameMap[actor.id] = actor.name
+            nameMap[actor.name] = actor.name
+            nameMap[lowerName] = actor.name
+            entityMap[actor.id] = actor
+            entityMap[actor.name] = actor
+            entityMap[lowerName] = actor
             if (!actor.stashDbId.isNullOrBlank()) {
-                map[actor.stashDbId] = actor.name
+                nameMap[actor.stashDbId] = actor.name
+                entityMap[actor.stashDbId] = actor
             }
         }
-        map
+        nameMap to entityMap
     }
-    val fullActorsMap = remember(actors) {
-        val map = mutableMapOf<String, ActorEntity>()
-        actors.forEach { actor ->
-            map[actor.id] = actor
-            map[actor.name] = actor
-            map[actor.name.trim().lowercase()] = actor
-            if (!actor.stashDbId.isNullOrBlank()) {
-                map[actor.stashDbId] = actor
-            }
-        }
-        map
-    }
+
     val studiosMap = remember(studios) {
         val map = mutableMapOf<String, String>()
         studios.forEach { studio ->
@@ -153,21 +139,18 @@ fun HomeScreen(
             }
     }
 
-    // Scroll to top immediately when the user modifies sort, filter, or search query
+    // Scroll to top immediately when the user modifies sort or search query
     var previousSort by rememberSaveable { mutableStateOf(currentSort.name) }
-    var previousFilter by rememberSaveable { mutableStateOf(viewFilter) }
     var previousQuery by rememberSaveable { mutableStateOf(searchQuery) }
 
-    LaunchedEffect(currentSort, viewFilter, searchQuery, scrollKey) {
-        if (previousSort != currentSort.name || previousFilter != viewFilter || previousQuery != searchQuery) {
+    LaunchedEffect(currentSort, searchQuery, scrollKey) {
+        if (previousSort != currentSort.name || previousQuery != searchQuery) {
             previousSort = currentSort.name
-            previousFilter = viewFilter
             previousQuery = searchQuery
             viewModel.saveScrollPosition(scrollKey, 0, 0)
-            listState.scrollToItem(
-                index = 0,
-                scrollOffset = 0
-            )
+            if (displayedLinks.isNotEmpty()) {
+                listState.scrollToItem(index = 0, scrollOffset = 0)
+            }
         }
         activeOverlayCardId = null
     }
@@ -185,7 +168,7 @@ fun HomeScreen(
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = palette.bg,
         contentWindowInsets = WindowInsets.statusBars,
         topBar = {
             HomeTopAppBar(
@@ -199,26 +182,12 @@ fun HomeScreen(
                 currentSort = currentSort,
                 onSortChange = { newSort ->
                     viewModel.sortMode.value = newSort
-                    viewModel.saveScrollPosition(scrollKey, 0, 0)
-                    coroutineScope.launch {
-                        listState.scrollToItem(0, 0)
-                    }
                 },
                 onOpenDrawer = onOpenDrawer,
                 onNavigateBack = { viewModel.navigateBack() },
                 onAddScene = { viewModel.navigateTo(ScreenState.AddEditLink()) },
                 onEditActor = { showEditActorDialog = true },
-                onEditStudio = { showEditStudioDialog = true },
-                onSearchActorStash = {
-                    if (targetActor != null) {
-                        viewModel.searchStashForActor(targetActor.name, settings.stashDbApiKey)
-                    }
-                },
-                onSearchStudioStash = {
-                    if (targetStudio != null) {
-                        viewModel.searchStashForStudio(targetStudio.name, settings.stashDbApiKey)
-                    }
-                }
+                onEditStudio = { showEditStudioDialog = true }
             )
         }
     ) { paddingValues ->
@@ -267,7 +236,7 @@ fun HomeScreen(
                         Icon(
                             imageVector = Icons.Default.VideoLibrary,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.outline,
+                            tint = palette.textMuted,
                             modifier = Modifier.size(60.dp)
                         )
                         Text(
@@ -276,6 +245,7 @@ fun HomeScreen(
                                    else if (targetStudio != null) "No scenes for ${targetStudio.name}"
                                    else "Vault is Empty",
                             style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
@@ -283,7 +253,7 @@ fun HomeScreen(
                                    else if (targetActor != null || targetStudio != null) "Tap the '+' icon to link scenes to this entity."
                                    else "Tap the '+' icon in the top bar to add scenes.",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = palette.textSecondary
                         )
                     }
                 }
@@ -314,7 +284,7 @@ fun HomeScreen(
                     }
                 }
 
-                items(displayedLinks, key = { "${currentSort.name}_${it.id}" }) { link ->
+                items(displayedLinks, key = { it.id }) { link ->
                     val isBookmarked = remember(bookmarkedIds, link.id) {
                         bookmarkedIds.contains(link.id)
                     }

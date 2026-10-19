@@ -369,6 +369,7 @@ fun LinkCard(
                 InlineCardPlayer(
                     title = inlinePlayback.title,
                     qualities = inlinePlayback.qualities,
+                    subtitles = inlinePlayback.subtitles,
                     defaultHeaders = inlinePlayback.headers,
                     exoPlayer = exoPlayer,
                     enableGestures = enableVideoPlayerGestures,
@@ -413,8 +414,11 @@ fun LinkCard(
                                 .fillMaxSize()
                                 .privacyImageBlur(isBetaTest)
                                 .then(
-                                    if (isOverlayActive || menuProgress > 0.05f) {
-                                        Modifier.blur(radius = 8.dp, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                                    if (menuProgress > 0.01f) {
+                                        Modifier.blur(
+                                            radius = (8f * menuProgress).dp,
+                                            edgeTreatment = BlurredEdgeTreatment.Rectangle
+                                        )
                                     } else Modifier
                                 )
                         )
@@ -682,7 +686,7 @@ fun LinkCard(
                     if (!resolvingStatus.isNullOrBlank()) {
                         Text(
                             text = resolvingStatus,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = palette.textPrimary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center,
@@ -718,7 +722,7 @@ fun LinkCard(
                         )
                         Text(
                             text = resolutionError,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = palette.textPrimary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             textAlign = TextAlign.Center,
@@ -729,13 +733,13 @@ fun LinkCard(
                         Button(
                             onClick = onDismissResolutionError,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
+                                containerColor = accent,
+                                contentColor = Color.White
                             ),
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
                         ) {
-                            Text("OK", fontSize = 12.sp)
+                            Text("OK", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -770,7 +774,7 @@ fun LinkCard(
                                     fontWeight = FontWeight.Bold,
                                     letterSpacing = 0.15.sp
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = palette.textSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f, fill = false)
@@ -838,7 +842,7 @@ fun LinkCard(
                                     fontWeight = FontWeight.Normal,
                                     letterSpacing = 0.2.sp
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = palette.textSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 textAlign = TextAlign.End,
@@ -870,7 +874,7 @@ fun LinkCard(
                                 fontWeight = FontWeight.Normal,
                                 lineHeight = 20.sp
                             ),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = palette.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -884,7 +888,7 @@ fun LinkCard(
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     letterSpacing = 0.25.sp
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = palette.textSecondary,
                                 maxLines = 1
                             )
                         }

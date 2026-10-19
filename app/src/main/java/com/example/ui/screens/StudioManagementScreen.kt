@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -328,13 +329,11 @@ fun StudioManagementScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredStudios, key = { it.id }) { studio ->
-                    // Resilient scene count: lookup by ID first, then fallback to studio name
-                    val sceneCount = studioSceneCounts[studio.id] ?: studioSceneCounts[studio.name] ?: 0
                     val itemContent = @Composable {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 18.dp, bottom = 18.dp, start = 8.dp, end = 8.dp),
+                                .padding(top = 16.dp, bottom = 14.dp, start = 8.dp, end = 8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             val isBetaTest = LocalBetaTestPrivacy.current
@@ -352,7 +351,7 @@ fun StudioManagementScreen(
                                 val imageRequest = remember(studio.logoUrl, context) {
                                     ImageRequest.Builder(context)
                                         .data(studio.logoUrl)
-                                        .size(200, 200)
+                                        .size(220, 220)
                                         .crossfade(true)
                                         .crossfade(150)
                                         .build()
@@ -360,7 +359,7 @@ fun StudioManagementScreen(
 
                                 Box(
                                     modifier = Modifier
-                                        .size(70.dp)
+                                        .size(76.dp)
                                         .clip(CircleShape)
                                         .background(studioCustomBg)
                                         .border(1.5.dp, circleBorderColor, CircleShape),
@@ -372,7 +371,7 @@ fun StudioManagementScreen(
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier
                                             .fillMaxSize()
-                                            .padding(6.dp)
+                                            .padding(8.dp)
                                             .privacyImageBlur(isBetaTest)
                                     )
                                     if (isBetaTest) {
@@ -386,7 +385,7 @@ fun StudioManagementScreen(
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(70.dp)
+                                        .size(76.dp)
                                         .clip(CircleShape)
                                         .background(palette.cardBg.copy(alpha = 0.85f))
                                         .border(1.5.dp, circleBorderColor, CircleShape),
@@ -396,7 +395,7 @@ fun StudioManagementScreen(
                                         painter = painterResource(id = R.drawable.ic_nav_studio),
                                         contentDescription = null,
                                         tint = palette.textMuted,
-                                        modifier = Modifier.size(36.dp)
+                                        modifier = Modifier.size(38.dp)
                                     )
                                 }
                             }
@@ -406,18 +405,11 @@ fun StudioManagementScreen(
                             Text(
                                 text = studio.name,
                                 color = palette.textPrimary,
-                                fontSize = 14.sp,
+                                fontSize = 13.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-
-                            Spacer(modifier = Modifier.height(2.dp))
-
-                            Text(
-                                text = "$sceneCount scenes",
-                                color = palette.textMuted,
-                                fontSize = 11.sp
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }

@@ -44,14 +44,21 @@ fun GlassSurface(
     hazeState: dev.chrisbanes.haze.HazeState? = LocalHazeState.current
 ) {
 
+    val edgeFactor = (1f - transparency.coerceIn(0f, 1f) * 0.35f).coerceIn(0.55f, 1f)
+
     val drawEdgeLight: DrawScope.() -> Unit = {
-        val cornerPx = size.height * 0.5f
         val strokePx = 1.2.dp.toPx()
         val thinStrokePx = 0.6.dp.toPx()
+        val inset = strokePx * 0.65f
+        val insetWidth = (size.width - inset * 2f).coerceAtLeast(1f)
+        val insetHeight = (size.height - inset * 2f).coerceAtLeast(1f)
+        val cornerPx = insetHeight * 0.5f
 
         // 1. Subtle unbroken ambient glass perimeter contour
         drawRoundRect(
-            color = Color.White.copy(alpha = if (isDark) 0.12f else 0.22f),
+            color = Color.White.copy(alpha = (if (isDark) 0.12f else 0.22f) * edgeFactor),
+            topLeft = androidx.compose.ui.geometry.Offset(inset, inset),
+            size = androidx.compose.ui.geometry.Size(insetWidth, insetHeight),
             cornerRadius = CornerRadius(cornerPx, cornerPx),
             style = Stroke(width = strokePx)
         )
@@ -59,14 +66,14 @@ fun GlassSurface(
         // 2. Top Edge Light Path: sweeps left arc, top horizontal line, and wraps into top-right corner
         val topPath = Path().apply {
             arcTo(
-                rect = Rect(0f, 0f, cornerPx * 2f, size.height),
+                rect = Rect(inset, inset, inset + cornerPx * 2f, inset + insetHeight),
                 startAngleDegrees = 160f,
                 sweepAngleDegrees = 110f,
                 forceMoveTo = true
             )
-            lineTo(size.width - cornerPx, 0f)
+            lineTo(size.width - inset - cornerPx, inset)
             arcTo(
-                rect = Rect(size.width - cornerPx * 2f, 0f, size.width, size.height),
+                rect = Rect(size.width - inset - cornerPx * 2f, inset, size.width - inset, inset + insetHeight),
                 startAngleDegrees = 270f,
                 sweepAngleDegrees = 60f,
                 forceMoveTo = false
@@ -76,15 +83,15 @@ fun GlassSurface(
         // Top Core beam (1.2dp) - enters and exits smoothly within the hairline envelope
         val topCoreBrush = Brush.horizontalGradient(
             colors = listOf(
-                Color.Transparent,                                       // Starts faded from left
-                Color.White.copy(alpha = if (isDark) 0.60f else 0.80f), // Swelling into core
-                Color.White.copy(alpha = if (isDark) 0.85f else 0.98f), // Peak specular catch
-                accentColor.copy(alpha = if (isDark) 0.40f else 0.55f),
-                Color.White.copy(alpha = if (isDark) 0.55f else 0.75f),
-                Color.Transparent                                       // Fading before top-right corner
+                Color.Transparent,
+                Color.White.copy(alpha = (if (isDark) 0.60f else 0.80f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.85f else 0.98f) * edgeFactor),
+                accentColor.copy(alpha = (if (isDark) 0.40f else 0.55f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.55f else 0.75f) * edgeFactor),
+                Color.Transparent
             ),
-            startX = cornerPx * 0.3f,
-            endX = size.width - (cornerPx * 0.3f)
+            startX = inset + cornerPx * 0.3f,
+            endX = size.width - inset - (cornerPx * 0.3f)
         )
         drawPath(
             path = topPath,
@@ -95,15 +102,15 @@ fun GlassSurface(
         // Top Hairline (0.6dp) - spans full path from 0 to 0, ensuring both ends taper to an ultra-fine point
         val topHairlineBrush = Brush.horizontalGradient(
             colors = listOf(
-                Color.Transparent,                                       // 100% transparent start at left
-                Color.White.copy(alpha = if (isDark) 0.35f else 0.50f), // Tapered entry
-                Color.White.copy(alpha = if (isDark) 0.70f else 0.90f),
-                Color.White.copy(alpha = if (isDark) 0.40f else 0.60f),
-                Color.White.copy(alpha = if (isDark) 0.10f else 0.20f), // Tapered exit
-                Color.Transparent                                       // 100% transparent exit at right
+                Color.Transparent,
+                Color.White.copy(alpha = (if (isDark) 0.35f else 0.50f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.70f else 0.90f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.40f else 0.60f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.10f else 0.20f) * edgeFactor),
+                Color.Transparent
             ),
-            startX = 0f,
-            endX = size.width
+            startX = inset,
+            endX = size.width - inset
         )
         drawPath(
             path = topPath,
@@ -114,14 +121,14 @@ fun GlassSurface(
         // 3. Bottom Edge Light Path: sweeps right arc, bottom horizontal line, and wraps into bottom-left corner
         val bottomPath = Path().apply {
             arcTo(
-                rect = Rect(size.width - cornerPx * 2f, 0f, size.width, size.height),
+                rect = Rect(size.width - inset - cornerPx * 2f, inset, size.width - inset, inset + insetHeight),
                 startAngleDegrees = 340f,
                 sweepAngleDegrees = 110f,
                 forceMoveTo = true
             )
-            lineTo(cornerPx, size.height)
+            lineTo(inset + cornerPx, size.height - inset)
             arcTo(
-                rect = Rect(0f, 0f, cornerPx * 2f, size.height),
+                rect = Rect(inset, inset, inset + cornerPx * 2f, inset + insetHeight),
                 startAngleDegrees = 90f,
                 sweepAngleDegrees = 60f,
                 forceMoveTo = false
@@ -131,15 +138,15 @@ fun GlassSurface(
         // Bottom Core beam (1.2dp) - enters and exits smoothly within the hairline envelope
         val bottomCoreBrush = Brush.horizontalGradient(
             colors = listOf(
-                Color.Transparent,                                       // Fading before bottom-left corner
-                Color.White.copy(alpha = if (isDark) 0.55f else 0.75f),
-                accentColor.copy(alpha = if (isDark) 0.40f else 0.55f),
-                Color.White.copy(alpha = if (isDark) 0.85f else 0.98f), // Peak specular catch
-                Color.White.copy(alpha = if (isDark) 0.60f else 0.80f), // Swelling from right
-                Color.Transparent                                       // Starts faded from right
+                Color.Transparent,
+                Color.White.copy(alpha = (if (isDark) 0.55f else 0.75f) * edgeFactor),
+                accentColor.copy(alpha = (if (isDark) 0.40f else 0.55f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.85f else 0.98f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.60f else 0.80f) * edgeFactor),
+                Color.Transparent
             ),
-            startX = cornerPx * 0.3f,
-            endX = size.width - (cornerPx * 0.3f)
+            startX = inset + cornerPx * 0.3f,
+            endX = size.width - inset - (cornerPx * 0.3f)
         )
         drawPath(
             path = bottomPath,
@@ -150,15 +157,15 @@ fun GlassSurface(
         // Bottom Hairline (0.6dp) - spans full path from 0 to 0, ensuring both ends taper to an ultra-fine point
         val bottomHairlineBrush = Brush.horizontalGradient(
             colors = listOf(
-                Color.Transparent,                                       // 100% transparent exit at left
-                Color.White.copy(alpha = if (isDark) 0.10f else 0.20f), // Tapered exit
-                Color.White.copy(alpha = if (isDark) 0.40f else 0.60f),
-                Color.White.copy(alpha = if (isDark) 0.70f else 0.90f),
-                Color.White.copy(alpha = if (isDark) 0.35f else 0.50f), // Tapered entry
-                Color.Transparent                                       // 100% transparent start at right
+                Color.Transparent,
+                Color.White.copy(alpha = (if (isDark) 0.10f else 0.20f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.40f else 0.60f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.70f else 0.90f) * edgeFactor),
+                Color.White.copy(alpha = (if (isDark) 0.35f else 0.50f) * edgeFactor),
+                Color.Transparent
             ),
-            startX = 0f,
-            endX = size.width
+            startX = inset,
+            endX = size.width - inset
         )
         drawPath(
             path = bottomPath,

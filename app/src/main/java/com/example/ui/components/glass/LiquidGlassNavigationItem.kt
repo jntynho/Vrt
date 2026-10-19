@@ -1,7 +1,10 @@
 package com.example.ui.components.glass
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +16,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -61,6 +66,21 @@ fun LiquidGlassNavigationItem(
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val isHighFontScale = density.fontScale > 1.25f
 
+    val pulseBounceAnim = remember { Animatable(1f) }
+    LaunchedEffect(pulseTrigger) {
+        if (pulseTrigger > 0 && (isSelected || proximity > 0.6f)) {
+            pulseBounceAnim.snapTo(1f)
+            pulseBounceAnim.animateTo(1.07f, animationSpec = tween(85))
+            pulseBounceAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMedium
+                )
+            )
+        }
+    }
+
     // Immediate tactile feedback upon touch down
     val pressScale by animateFloatAsState(
         targetValue = if (isPressed) 0.92f else 1.0f,
@@ -69,7 +89,7 @@ fun LiquidGlassNavigationItem(
     )
 
     // Smooth proximity-based scale & color interpolation in continuous lockstep with indicator position
-    val selectedScale = 1.0f + (0.04f * proximity)
+    val selectedScale = (1.0f + (0.04f * proximity)) * pulseBounceAnim.value
     val contentColor = lerp(unselectedColor, accentColor, proximity)
     val labelAlpha = 0.70f + (0.30f * proximity)
 
@@ -110,7 +130,7 @@ fun LiquidGlassNavigationItem(
                 Text(
                     text = titleText,
                     fontSize = if (isLandscape) 9.sp else 9.5.sp,
-                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                     style = androidx.compose.material3.LocalTextStyle.current.copy(shadow = null),
                     color = contentColor.copy(alpha = labelAlpha),
                     maxLines = 1,

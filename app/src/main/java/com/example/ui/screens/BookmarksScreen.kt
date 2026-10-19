@@ -5,11 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
@@ -17,20 +13,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.local.entity.ActorEntity
@@ -41,6 +28,7 @@ import com.example.ui.components.LinkCard
 import com.example.ui.components.SearchableTophead
 import com.example.ui.components.SkeletonCard
 import com.example.ui.components.vaultTopGlow
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalVaultPalette
 
 private data class SortOptionItem(
@@ -60,10 +48,10 @@ private val SORT_OPTIONS = listOf(
 @Composable
 fun BookmarksScreen(
     viewModel: MainViewModel,
-    onOpenDrawer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val palette = LocalVaultPalette.current
+    val accent = LocalAccentColor.current
 
     val allLinks by viewModel.allLinks.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedIds.collectAsStateWithLifecycle()
@@ -169,9 +157,6 @@ fun BookmarksScreen(
         activeOverlayCardId = null
     }
 
-    val focusRequester = remember { FocusRequester() }
-    val focusManager = LocalFocusManager.current
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = palette.bg,
@@ -223,7 +208,7 @@ fun BookmarksScreen(
                                             Text(
                                                 text = option.label,
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                                color = if (isSelected) accent else palette.textPrimary
                                             )
                                         },
                                         leadingIcon = {
@@ -231,7 +216,7 @@ fun BookmarksScreen(
                                                 Icon(
                                                     imageVector = Icons.Default.Check,
                                                     contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.primary
+                                                    tint = accent
                                                 )
                                             }
                                         },
@@ -274,18 +259,18 @@ fun BookmarksScreen(
                     Icon(
                         imageVector = Icons.Default.BookmarkBorder,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        tint = palette.textMuted,
                         modifier = Modifier.size(64.dp)
                     )
                     Text(
                         text = "No bookmarked scenes yet",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = palette.textPrimary
                     )
                     Text(
                         text = "Tap the Save button on any link card to bookmark it for quick access.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = palette.textSecondary,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -299,7 +284,7 @@ fun BookmarksScreen(
                 contentPadding = PaddingValues(bottom = 116.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(bookmarkedLinks, key = { "${currentSort.name}_${it.id}" }) { link ->
+                items(bookmarkedLinks, key = { it.id }) { link ->
                     LinkCard(
                         link = link,
                         actorsMap = actorsMap,
