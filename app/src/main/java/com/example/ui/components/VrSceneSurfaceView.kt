@@ -183,9 +183,13 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
             }
         }
 
-        @Suppress("DEPRECATION")
-        val displayRotation = (context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
-            ?.defaultDisplay?.rotation ?: Surface.ROTATION_90
+        val displayRotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            context.display?.rotation ?: Surface.ROTATION_90
+        } else {
+            @Suppress("DEPRECATION")
+            (context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+                ?.defaultDisplay?.rotation ?: Surface.ROTATION_90
+        }
 
         when (displayRotation) {
             Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(
@@ -204,6 +208,12 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
                 rawRotationMatrix,
                 SensorManager.AXIS_MINUS_X,
                 SensorManager.AXIS_MINUS_Y,
+                displayRotationMatrix
+            )
+            Surface.ROTATION_0 -> SensorManager.remapCoordinateSystem(
+                rawRotationMatrix,
+                SensorManager.AXIS_X,
+                SensorManager.AXIS_Y,
                 displayRotationMatrix
             )
             else -> System.arraycopy(rawRotationMatrix, 0, displayRotationMatrix, 0, 9)
@@ -259,31 +269,8 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                lastTouchX = event.x
-                lastTouchY = event.y
-                isTouchDragging = true
-                parent?.requestDisallowInterceptTouchEvent(true)
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (isTouchDragging) {
-                    val dx = event.x - lastTouchX
-                    val dy = event.y - lastTouchY
-                    lastTouchX = event.x
-                    lastTouchY = event.y
-                    panCameraByTouch(dx, dy, width.toFloat(), height.toFloat())
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                    return true
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isTouchDragging = false
-                parent?.requestDisallowInterceptTouchEvent(false)
-                return true
-            }
-        }
+        // Touch gestures are unified and orchestrated via Compose's pointerInput in MediaPlayers.kt
+        // which delegates to panCameraByTouch(...) while seamlessly supporting double-tap seek and single-tap controls.
         return super.onTouchEvent(event)
     }
 
@@ -382,6 +369,17 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+
+            // Safely delete any previous GL program and texture on surface recreation
+            if (programId != 0) {
+                GLES20.glDeleteProgram(programId)
+                programId = 0
+            }
+            if (oesTextureId != 0) {
+                val textures = intArrayOf(oesTextureId)
+                GLES20.glDeleteTextures(1, textures, 0)
+                oesTextureId = 0
+            }
 
             programId = createShaderProgram(VERTEX_SHADER, FRAGMENT_SHADER)
             mvpMatrixHandle = GLES20.glGetUniformLocation(programId, "uMvpMatrix")
@@ -554,29 +552,35 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
                 }
             }
 
-            vertexBuffer = ByteBuffer.allocateDirect(positions.size * 4)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .apply {
-                    put(positions)
-                    position(0)
-                }
+            val posBytesNeeded = positions.size * 4
+            if (vertexBuffer == null || vertexBuffer?.capacity()?.times(4) != posBytesNeeded) {
+                vertexBuffer = ByteBuffer.allocateDirect(posBytesNeeded)
+                    .order(ByteOrder.nativeOrder())
+                    .asFloatBuffer()
+            }
+            vertexBuffer?.clear()
+            vertexBuffer?.put(positions)
+            vertexBuffer?.position(0)
 
-            uvBuffer = ByteBuffer.allocateDirect(uvs.size * 4)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .apply {
-                    put(uvs)
-                    position(0)
-                }
+            val uvBytesNeeded = uvs.size * 4
+            if (uvBuffer == null || uvBuffer?.capacity()?.times(4) != uvBytesNeeded) {
+                uvBuffer = ByteBuffer.allocateDirect(uvBytesNeeded)
+                    .order(ByteOrder.nativeOrder())
+                    .asFloatBuffer()
+            }
+            uvBuffer?.clear()
+            uvBuffer?.put(uvs)
+            uvBuffer?.position(0)
 
-            indexBuffer = ByteBuffer.allocateDirect(indices.size * 2)
-                .order(ByteOrder.nativeOrder())
-                .asShortBuffer()
-                .apply {
-                    put(indices)
-                    position(0)
-                }
+            val indexBytesNeeded = indices.size * 2
+            if (indexBuffer == null || indexBuffer?.capacity()?.times(2) != indexBytesNeeded) {
+                indexBuffer = ByteBuffer.allocateDirect(indexBytesNeeded)
+                    .order(ByteOrder.nativeOrder())
+                    .asShortBuffer()
+            }
+            indexBuffer?.clear()
+            indexBuffer?.put(indices)
+            indexBuffer?.position(0)
 
             indexCount = indices.size
         }
@@ -616,6 +620,11 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
             GLES20.glAttachShader(program, vertexShader)
             GLES20.glAttachShader(program, fragmentShader)
             GLES20.glLinkProgram(program)
+
+            // Once linked into the program, delete individual shaders to prevent GPU memory leaks
+            GLES20.glDeleteShader(vertexShader)
+            GLES20.glDeleteShader(fragmentShader)
+
             return program
         }
 

@@ -520,18 +520,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // Sort qualities descending by resolution (2160p -> 1440p -> 1080p -> 720p -> Auto)
-                val finalQualities = combinedQualities.sortedByDescending { q ->
-                    when {
-                        q.quality.contains("2160") || q.quality.contains("4k", true) -> 2160
-                        q.quality.contains("1440") || q.quality.contains("2k", true) -> 1440
-                        q.quality.contains("1080") || q.quality.contains("hd", true) -> 1080
-                        q.quality.contains("720") -> 720
-                        q.quality.contains("480") -> 480
-                        q.quality.contains("360") -> 360
-                        else -> 100
-                    }
-                }
+                // Sort qualities descending by resolution, respecting the selected/default stream
+                val finalQualities = combinedQualities.sortedWith(
+                    compareByDescending<StreamQuality> { it.isDefault }
+                        .thenByDescending { q ->
+                            when {
+                                q.quality.contains("vr", ignoreCase = true) -> 2880
+                                q.quality.contains("2160") || q.quality.contains("4k", ignoreCase = true) -> 2160
+                                q.quality.contains("1440") || q.quality.contains("2k", ignoreCase = true) -> 1440
+                                q.quality.contains("1080") || q.quality.contains("hd", ignoreCase = true) -> 1080
+                                q.quality.contains("720") -> 720
+                                q.quality.contains("480") -> 480
+                                q.quality.contains("360") -> 360
+                                else -> 100
+                            }
+                        }
+                )
 
                 if (finalQualities.isEmpty()) {
                     _videoResolutionError.value = "No playable media qualities found for this source."

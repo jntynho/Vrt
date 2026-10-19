@@ -226,13 +226,12 @@ fun PlayerControlsOverlay(
                 )
             }
 
-            // Top Bar: Hidden in VR mode so only the 3 VR buttons remain on screen
-            if (!isVrMode) {
-                if (isFullscreen) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = 840.dp)
+            // Top Bar: Title, HDR pill, and Back Button
+            if (isFullscreen) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 840.dp)
                             .statusBarsPadding()
                             .navigationBarsPadding()
                             .padding(horizontal = 36.dp, vertical = 12.dp)
@@ -299,7 +298,6 @@ fun PlayerControlsOverlay(
                             .padding(top = 8.dp, end = 8.dp)
                     )
                 }
-            }
 
             // Center 3-Button Controls (10s Rewind, Play/Pause, 10s Forward) - Hidden during Buffering and in VR Mode
             AnimatedVisibility(
@@ -408,7 +406,32 @@ fun PlayerControlsOverlay(
                         horizontalArrangement = Arrangement.spacedBy(if (isFullscreen) 8.dp else 6.dp)
                     ) {
                         if (isVrMode) {
-                            // In VR mode, show VR controls + Fullscreen button (Right-to-Left: Fullscreen -> VR -> Recenter -> Gyro)
+                            // Play/Pause button in VR
+                            PlayerOverlayActionButton(
+                                onClick = onTogglePlayPause,
+                                iconRes = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                testTag = "vr_play_pause_button",
+                                isFullscreen = isFullscreen,
+                                isActive = isPlaying,
+                                activeColor = accent
+                            )
+
+                            // Stereo Mode Toggle (SBS vs Top-Bottom / Over-Under)
+                            if (onToggleVrStereoMode != null) {
+                                val isTopBottom = (vrStereoMode == androidx.media3.common.C.STEREO_MODE_TOP_BOTTOM)
+                                PlayerOverlayActionButton(
+                                    onClick = onToggleVrStereoMode,
+                                    iconRes = R.drawable.ic_player_vr,
+                                    contentDescription = if (isTopBottom) "VR 3D: Top-Bottom (OU)" else "VR 3D: Side-by-Side (SBS)",
+                                    testTag = "vr_stereo_mode_button",
+                                    isFullscreen = isFullscreen,
+                                    isActive = isTopBottom,
+                                    activeColor = accent
+                                )
+                            }
+
+                            // Gyroscope toggle
                             if (onToggleVrGyro != null) {
                                 PlayerOverlayActionButton(
                                     onClick = onToggleVrGyro,
@@ -421,6 +444,7 @@ fun PlayerControlsOverlay(
                                 )
                             }
 
+                            // Recenter Scene
                             if (onRecenterVr != null) {
                                 PlayerOverlayActionButton(
                                     onClick = onRecenterVr,
@@ -433,6 +457,7 @@ fun PlayerControlsOverlay(
                                 )
                             }
 
+                            // Exit VR
                             if (onToggleVrMode != null) {
                                 PlayerOverlayActionButton(
                                     onClick = onToggleVrMode,

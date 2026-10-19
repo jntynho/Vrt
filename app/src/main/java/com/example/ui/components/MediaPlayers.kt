@@ -815,7 +815,13 @@ fun CoreMediaPlayer(
             subtitleFontFamily = subtitleFontFamily,
             onSubtitleFontFamilyChange = { subtitleFontFamily = it },
             onToggleVrMode = {
-                isVrMode = !isVrMode
+                val nextMode = !isVrMode
+                isVrMode = nextMode
+                if (nextMode) {
+                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
             },
             onToggleVrGyro = {
                 vrUseGyro = !vrUseGyro
@@ -824,9 +830,18 @@ fun CoreMediaPlayer(
                 sphericalViewRef?.recenter()
             },
             onToggleVrStereoMode = {
-                vrStereoMode = when (vrStereoMode) {
+                val newMode = when (vrStereoMode) {
                     C.STEREO_MODE_LEFT_RIGHT -> C.STEREO_MODE_TOP_BOTTOM
                     else -> C.STEREO_MODE_LEFT_RIGHT
+                }
+                vrStereoMode = newMode
+                val modeLabel = if (newMode == C.STEREO_MODE_TOP_BOTTOM) "VR 3D: Top-Bottom (OU)" else "VR 3D: Side-by-Side (SBS)"
+                switchingQualityLabel = modeLabel
+                coroutineScope.launch {
+                    delay(2000)
+                    if (switchingQualityLabel == modeLabel) {
+                        switchingQualityLabel = null
+                    }
                 }
             },
             onBack = handleBackAction,

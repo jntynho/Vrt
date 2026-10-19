@@ -4,7 +4,6 @@ import android.content.pm.ActivityInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -24,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -49,10 +49,6 @@ import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.launch
 
 private val DialogScrim = Color.Black.copy(alpha = 0.65f)
-
-private val EmphasizedDecelerateEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
-private val EmphasizedAccelerateEasing = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
-private const val TRANSITION_DURATION_MS = 280
 
 val LocalHazeState = compositionLocalOf<HazeState?> { null }
 
@@ -301,44 +297,36 @@ fun MainAppShell(viewModel: MainViewModel) {
                             targetState = currentScreen,
                             modifier = Modifier
                                 .fillMaxSize()
+                                .clipToBounds()
                                 .haze(hazeState),
                             transitionSpec = {
-                                val initialTab = getTabOrder(initialState)
-                                val targetTab = getTabOrder(targetState)
+                                val initialOrder = getTabOrder(initialState)
+                                val targetOrder = getTabOrder(targetState)
                                 val isBack = when {
                                     navDirection == MainViewModel.NavigationDirection.BACK -> true
-                                    initialTab != null && targetTab != null && initialTab != targetTab -> targetTab < initialTab
+                                    targetState is ScreenState.Home -> true
+                                    initialOrder != null && targetOrder != null && initialOrder != targetOrder -> targetOrder < initialOrder
                                     else -> false
                                 }
 
                                 if (isBack) {
-                                    (slideInHorizontally(
-                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedDecelerateEasing)
-                                    ) { fullWidth -> -fullWidth / 6 } + fadeIn(
-                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = LinearOutSlowInEasing)
-                                    )).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedAccelerateEasing)
-                                        ) { fullWidth -> fullWidth } + fadeOut(
-                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = FastOutLinearInEasing)
-                                        )
-                                    ).apply {
-                                        targetContentZIndex = 0f
-                                    }
+                                    (slideInHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
+                                            fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)))
+                                        .togetherWith(
+                                            slideOutHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> width } +
+                                                    fadeOut(animationSpec = tween(220, easing = FastOutLinearInEasing))
+                                        ).apply {
+                                            targetContentZIndex = 0f
+                                        }
                                 } else {
-                                    (slideInHorizontally(
-                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedDecelerateEasing)
-                                    ) { fullWidth -> fullWidth } + fadeIn(
-                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = LinearOutSlowInEasing)
-                                    )).togetherWith(
-                                        slideOutHorizontally(
-                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedAccelerateEasing)
-                                        ) { fullWidth -> -fullWidth / 6 } + fadeOut(
-                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = FastOutLinearInEasing)
-                                        )
-                                    ).apply {
-                                        targetContentZIndex = 1f
-                                    }
+                                    (slideInHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> width } +
+                                            fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)))
+                                        .togetherWith(
+                                            slideOutHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
+                                                    fadeOut(animationSpec = tween(220, easing = FastOutLinearInEasing))
+                                        ).apply {
+                                            targetContentZIndex = 1f
+                                        }
                                 }
                             },
                             label = "screen_motion_transition"
