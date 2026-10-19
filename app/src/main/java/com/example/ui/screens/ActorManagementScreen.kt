@@ -42,6 +42,7 @@ import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
 import com.example.ui.components.SearchableTophead
 import com.example.ui.components.VaultDialogShape
+import com.example.ui.components.isAppLightTheme
 import com.example.ui.components.vaultTopGlow
 import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalBetaTestPrivacy
@@ -66,13 +67,11 @@ fun ActorManagementScreen(
 ) {
     val palette = LocalVaultPalette.current
     val accent = LocalAccentColor.current
-    val isLight = palette.name.equals("light", ignoreCase = true)
+    val isLight = isAppLightTheme()
     val circleBorderColor = if (isLight) Color.Black else Color.White
 
     val actors by viewModel.allActors.collectAsStateWithLifecycle()
-    val actorSceneCounts by viewModel.actorSceneCounts.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val currentScreen by viewModel.screenState.collectAsStateWithLifecycle()
     val showCards = settings.showManagementCards
 
     var showAddDialog by remember { mutableStateOf(false) }
@@ -87,13 +86,6 @@ fun ActorManagementScreen(
     BackHandler(enabled = isSearchExpanded) {
         isSearchExpanded = false
         searchQuery = ""
-    }
-
-    // Auto-open Add Dialog if navigated via ScreenState.AddEditActor
-    LaunchedEffect(currentScreen) {
-        if (currentScreen is ScreenState.AddEditActor) {
-            showAddDialog = true
-        }
     }
 
     val scrollKey = "management_actors"
@@ -120,10 +112,14 @@ fun ActorManagementScreen(
         }
     }
 
-    // Reset scroll to top when search query changes to prevent index desync
+    // Reset scroll to top only when search query actively changes to prevent index desync
+    var previousSearchQuery by rememberSaveable { mutableStateOf(searchQuery) }
     LaunchedEffect(searchQuery) {
-        if (searchQuery.isNotEmpty()) {
-            gridState.scrollToItem(0)
+        if (previousSearchQuery != searchQuery) {
+            previousSearchQuery = searchQuery
+            if (searchQuery.isNotEmpty()) {
+                gridState.scrollToItem(0)
+            }
         }
     }
 
@@ -359,14 +355,12 @@ fun ActorManagementScreen(
                                         ImageRequest.Builder(context)
                                             .data(actor.imageUrl)
                                             .size(220, 220)
-                                            .crossfade(true)
                                             .crossfade(150)
                                             .build()
                                     }
                                     val z = actor.imageZoom.coerceIn(1f, 3f)
                                     val biasX = (actor.imagePositionX.coerceIn(0f, 100f) - 50f) / 50f
                                     val biasY = (actor.imagePositionY.coerceIn(0f, 100f) - 50f) / 50f
-                                    val hasCustomTransform = z > 1.02f || biasX != 0f || biasY != 0f
 
                                     AsyncImage(
                                         model = imageRequest,
@@ -377,7 +371,7 @@ fun ActorManagementScreen(
                                             .fillMaxSize()
                                             .privacyImageBlur(isBetaTest)
                                             .then(
-                                                if (hasCustomTransform) {
+                                                if (z > 1.02f) {
                                                     Modifier.graphicsLayer {
                                                         val maxX = size.width * (z - 1f) / 2f
                                                         val maxY = size.height * (z - 1f) / 2f
@@ -537,6 +531,7 @@ fun ActorManagementScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
+                        val isBetaTest = LocalBetaTestPrivacy.current
                         Box(
                             modifier = Modifier
                                 .size(54.dp)
@@ -550,8 +545,17 @@ fun ActorManagementScreen(
                                     model = imageUrl.trim(),
                                     contentDescription = "Preview",
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .privacyImageBlur(isBetaTest)
                                 )
+                                if (isBetaTest) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(PrivacyScrim)
+                                    )
+                                }
                             } else {
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_nav_actor),

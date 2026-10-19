@@ -1,8 +1,8 @@
 package com.example.ui.components
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,14 +10,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,17 +43,17 @@ import coil.request.SuccessResult
 import com.example.R
 import com.example.data.local.entity.ActorEntity
 import com.example.network.StashDbApiService
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalBetaTestPrivacy
 import com.example.ui.theme.LocalVaultPalette
 import com.example.ui.theme.privacyImageBlur
 import java.util.Locale
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @Composable
 fun ActorDetailsDialog(
     actor: ActorEntity,
     stashDbApiKey: String,
+    existingNames: List<String> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (ActorEntity) -> Unit,
     onDeleteCascade: (String) -> Unit
@@ -91,6 +89,13 @@ fun ActorDetailsDialog(
         label = "reset_spin"
     )
 
+    val isDuplicateName = remember(editedName, existingNames, actor.name) {
+        val trimmed = editedName.trim()
+        trimmed.isNotEmpty() &&
+            !trimmed.equals(actor.name, ignoreCase = true) &&
+            existingNames.any { it.equals(trimmed, ignoreCase = true) }
+    }
+
     // Verify pasted URL is a real loadable image and transition directly to Adjust Photo once loaded
     LaunchedEffect(pendingPastedImageUrl) {
         val candidateUrl = pendingPastedImageUrl?.trim() ?: return@LaunchedEffect
@@ -124,7 +129,7 @@ fun ActorDetailsDialog(
                 fetchedImages = listOf(candidateUrl) + fetchedImages
             }
             posX = 50f
-            posY = 50f
+            posY = 0f
             zoom = 1.0f
             pendingPastedImageUrl = null
             isAdjustMode = true
@@ -163,12 +168,15 @@ fun ActorDetailsDialog(
     }
 
     val isBetaTest = LocalBetaTestPrivacy.current
+    val palette = LocalVaultPalette.current
+    val accent = LocalAccentColor.current
     val isLight = isAppLightTheme()
     val circleBorderColor = if (isLight) Color.Black else Color.White
-    val palette = LocalVaultPalette.current
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (isAdjustMode) isAdjustMode = false else onDismiss()
+        },
         modifier = Modifier.vaultTopGlow(),
         containerColor = palette.dialogBg,
         shape = VaultDialogShape,
@@ -181,6 +189,7 @@ fun ActorDetailsDialog(
                 ) {
                     Text(
                         text = "Actor Details",
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleLarge
                     )
@@ -191,7 +200,7 @@ fun ActorDetailsDialog(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_details_adjust_brush),
                             contentDescription = "Adjust Photo Position & Zoom",
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = accent
                         )
                     }
                 }
@@ -207,7 +216,7 @@ fun ActorDetailsDialog(
                             modifier = Modifier
                                 .size(42.dp)
                                 .clip(CircleShape)
-                                .background(Color(0xFF3B3C3E))
+                                .background(palette.surface)
                                 .testTag("adjust_photo_back_button")
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -225,17 +234,18 @@ fun ActorDetailsDialog(
                         Spacer(Modifier.width(12.dp))
                         Text(
                             text = "Adjust Photo",
+                            color = palette.textPrimary,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.titleLarge
                         )
                     }
-                    val isModified = posX != 50f || posY != 50f || zoom != 1.0f || (selectedImageUrl != actor.imageUrl)
+                    val isModified = posX != 50f || posY != 0f || zoom != 1.0f || (selectedImageUrl != actor.imageUrl)
                     IconButton(
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             resetRotationTarget -= 360f
                             posX = 50f
-                            posY = 50f
+                            posY = 0f
                             zoom = 1.0f
                             selectedImageUrl = editedImageUrl.ifBlank { actor.imageUrl }
                         },
@@ -244,7 +254,7 @@ fun ActorDetailsDialog(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_action_reset),
                             contentDescription = "Reset",
-                            tint = if (isModified) MaterialTheme.colorScheme.primary else palette.textPrimary.copy(alpha = 0.5f),
+                            tint = if (isModified) accent else palette.textPrimary.copy(alpha = 0.5f),
                             modifier = Modifier
                                 .size(22.dp)
                                 .graphicsLayer {
@@ -272,6 +282,13 @@ fun ActorDetailsDialog(
                             .fillMaxWidth()
                             .testTag("actor_name_static_input")
                     )
+                    if (isDuplicateName) {
+                        Text(
+                            text = "An actor with this name already exists",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp
+                        )
+                    }
 
                     // Editable Image URL Field
                     SceneInputField(
@@ -354,7 +371,7 @@ fun ActorDetailsDialog(
                                         onClick = { confirmDeleteActor = false },
                                         shape = CircleShape
                                     ) {
-                                        Text("Cancel")
+                                        Text("Cancel", color = palette.textSecondary)
                                     }
                                     Spacer(Modifier.width(6.dp))
                                     Button(
@@ -389,7 +406,7 @@ fun ActorDetailsDialog(
                             .size(160.dp)
                             .shadow(3.dp, CircleShape)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                            .background(palette.surface),
                         contentAlignment = Alignment.Center
                     ) {
                         val currentPreviewUrl = selectedImageUrl.ifBlank { actor.imageUrl }
@@ -405,14 +422,18 @@ fun ActorDetailsDialog(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .privacyImageBlur(isBetaTest)
-                                    .graphicsLayer {
-                                        val maxX = size.width * (z - 1f) / 2f
-                                        val maxY = size.height * (z - 1f) / 2f
-                                        scaleX = z
-                                        scaleY = z
-                                        translationX = -biasX * maxX
-                                        translationY = -biasY * maxY
-                                    }
+                                    .then(
+                                        if (z > 1.02f) {
+                                            Modifier.graphicsLayer {
+                                                val maxX = size.width * (z - 1f) / 2f
+                                                val maxY = size.height * (z - 1f) / 2f
+                                                scaleX = z
+                                                scaleY = z
+                                                translationX = -biasX * maxX
+                                                translationY = -biasY * maxY
+                                            }
+                                        } else Modifier
+                                    )
                             )
                             if (isBetaTest) {
                                 Box(
@@ -426,7 +447,7 @@ fun ActorDetailsDialog(
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_nav_actor),
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = palette.textMuted,
                                     modifier = Modifier.size(64.dp)
                                 )
                             }
@@ -455,7 +476,7 @@ fun ActorDetailsDialog(
                                 text = "X",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 modifier = Modifier.width(16.dp)
                             )
                             SleekSlimSlider(
@@ -468,7 +489,7 @@ fun ActorDetailsDialog(
                                 text = "${posX.toInt()}%",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 textAlign = TextAlign.End,
                                 modifier = Modifier.width(38.dp)
                             )
@@ -484,7 +505,7 @@ fun ActorDetailsDialog(
                                 text = "Y",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 modifier = Modifier.width(16.dp)
                             )
                             SleekSlimSlider(
@@ -497,7 +518,7 @@ fun ActorDetailsDialog(
                                 text = "${posY.toInt()}%",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 textAlign = TextAlign.End,
                                 modifier = Modifier.width(38.dp)
                             )
@@ -513,7 +534,7 @@ fun ActorDetailsDialog(
                                 text = "Z",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 modifier = Modifier.width(16.dp)
                             )
                             SleekSlimSlider(
@@ -526,7 +547,7 @@ fun ActorDetailsDialog(
                                 text = String.format(Locale.US, "%.1fx", zoom),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
+                                color = accent,
                                 textAlign = TextAlign.End,
                                 modifier = Modifier.width(38.dp)
                             )
@@ -535,7 +556,6 @@ fun ActorDetailsDialog(
 
                     // Horizontal Circle Photo Selector
                     if (isFetchingImages || fetchedImages.size > 1) {
-                        val palette = LocalVaultPalette.current
                         val skeletonBg = palette.skeletonBg
                         val skeletonBorder = if (isLight) Color.Black.copy(alpha = 0.20f) else Color.White.copy(alpha = 0.25f)
 
@@ -547,7 +567,7 @@ fun ActorDetailsDialog(
                                 text = if (fetchedImages.size > 1) "Select Photo (${fetchedImages.size})" else "Select Photo",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = palette.textSecondary
                             )
                             LazyRow(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -563,7 +583,10 @@ fun ActorDetailsDialog(
                                         skeletonBg = skeletonBg,
                                         skeletonBorder = skeletonBorder,
                                         isBetaTest = isBetaTest,
-                                        onSelect = { selectedImageUrl = imgUrl }
+                                        onSelect = {
+                                            selectedImageUrl = imgUrl
+                                            editedImageUrl = imgUrl
+                                        }
                                     )
                                 }
 
@@ -601,9 +624,10 @@ fun ActorDetailsDialog(
                         )
                         onSave(updatedActor)
                     },
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                     shape = CircleShape
                 ) {
-                    Text("Save")
+                    Text("Save", fontWeight = FontWeight.Bold)
                 }
             } else {
                 Button(
@@ -618,10 +642,12 @@ fun ActorDetailsDialog(
                         onSave(updatedActor)
                         onDismiss()
                     },
+                    enabled = editedName.isNotBlank() && !isDuplicateName,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                     shape = CircleShape,
                     modifier = Modifier.testTag("actor_details_save_button")
                 ) {
-                    Text("Save")
+                    Text("Save", fontWeight = FontWeight.Bold)
                 }
             }
         },
@@ -631,14 +657,14 @@ fun ActorDetailsDialog(
                     onClick = onDismiss,
                     shape = CircleShape
                 ) {
-                    Text("Close")
+                    Text("Close", color = palette.textSecondary)
                 }
             } else {
                 TextButton(
                     onClick = { isAdjustMode = false },
                     shape = CircleShape
                 ) {
-                    Text("Back")
+                    Text("Back", color = palette.textSecondary)
                 }
             }
         }

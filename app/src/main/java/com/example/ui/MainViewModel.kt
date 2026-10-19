@@ -55,10 +55,8 @@ sealed class ScreenState {
     object Bookmarks : ScreenState()
     data class AddEditLink(val linkId: String? = null) : ScreenState()
     object Actors : ScreenState()
-    data class AddEditActor(val actorId: String? = null) : ScreenState()
     data class ActorScenes(val actorId: String) : ScreenState()
     object Studios : ScreenState()
-    data class AddEditStudio(val studioId: String? = null) : ScreenState()
     data class StudioScenes(val studioId: String) : ScreenState()
     object StashDb : ScreenState()
     object Onlyhaven : ScreenState()
@@ -1589,17 +1587,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.insertActor(actor) }
     }
 
-    fun deleteActor(id: String) = deleteActorWithCascade(id)
-
     fun deleteActorWithCascade(actorId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val links = repository.allLinks.first()
+                val linksToUpdate = mutableListOf<LinkEntity>()
                 links.forEach { link ->
                     if (link.actorIds.contains(actorId)) {
                         val updatedActors = link.actorIds.filter { it != actorId }
-                        repository.updateLink(link.copy(actorIds = updatedActors))
+                        if (updatedActors.isEmpty()) {
+                            repository.deleteLinkById(link.id)
+                        } else {
+                            linksToUpdate.add(link.copy(actorIds = updatedActors))
+                        }
                     }
+                }
+                if (linksToUpdate.isNotEmpty()) {
+                    repository.insertLinks(linksToUpdate)
                 }
                 repository.deleteActorById(actorId)
             } catch (e: Exception) {
@@ -1613,16 +1617,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.insertStudio(studio) }
     }
 
-    fun deleteStudio(id: String) = deleteStudioWithCascade(id)
-
     fun deleteStudioWithCascade(studioId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val links = repository.allLinks.first()
                 links.forEach { link ->
                     if (link.studioIds.contains(studioId)) {
-                        val updatedStudios = link.studioIds.filter { it != studioId }
-                        repository.updateLink(link.copy(studioIds = updatedStudios))
+                        repository.deleteLinkById(link.id)
                     }
                 }
                 repository.deleteStudioById(studioId)
@@ -1670,6 +1671,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             obj.put("name", a.name)
             obj.put("imageUrl", a.imageUrl)
             obj.put("originalImageUrl", a.originalImageUrl ?: JSONObject.NULL)
+            obj.put("imagePositionX", a.imagePositionX.toDouble())
+            obj.put("imagePositionY", a.imagePositionY.toDouble())
+            obj.put("imageZoom", a.imageZoom.toDouble())
             actorsArr.put(obj)
         }
         root.put("actors", actorsArr)
@@ -1681,7 +1685,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             obj.put("stashDbId", s.stashDbId ?: JSONObject.NULL)
             obj.put("name", s.name)
             obj.put("logoUrl", s.logoUrl ?: JSONObject.NULL)
+            obj.put("logoBgColor", s.logoBgColor ?: JSONObject.NULL)
             obj.put("imageUrl", s.imageUrl ?: JSONObject.NULL)
+            obj.put("originalImageUrl", s.originalImageUrl ?: JSONObject.NULL)
             studiosArr.put(obj)
         }
         root.put("studios", studiosArr)
@@ -1704,13 +1710,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val name = obj.optString("name", "Unknown Actor")
                     val imageUrl = obj.optString("imageUrl", "")
                     val originalImageUrl = if (obj.isNull("originalImageUrl")) null else obj.optString("originalImageUrl")
+                    val imagePositionX = obj.optDouble("imagePositionX", 50.0).toFloat().coerceIn(0f, 100f)
+                    val imagePositionY = obj.optDouble("imagePositionY", 0.0).toFloat().coerceIn(0f, 100f)
+                    val imageZoom = obj.optDouble("imageZoom", 1.0).toFloat().coerceIn(1.0f, 3.0f)
                     importedActors.add(
                         ActorEntity(
                             id = id,
                             stashDbId = stashDbId,
                             name = name,
                             imageUrl = imageUrl,
-                            originalImageUrl = originalImageUrl
+                            originalImageUrl = originalImageUrl,
+                            imagePositionX = imagePositionX,
+                            imagePositionY = imagePositionY,
+                            imageZoom = imageZoom
                         )
                     )
                 }
@@ -1729,14 +1741,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val stashDbId = if (obj.isNull("stashDbId")) null else obj.optString("stashDbId")
                     val name = obj.optString("name", "Unknown Studio")
                     val logoUrl = if (obj.isNull("logoUrl")) null else obj.optString("logoUrl")
+                    val logoBgColor = if (obj.isNull("logoBgColor")) null else obj.optString("logoBgColor").takeIf { it.isNotBlank() }
                     val imageUrl = if (obj.isNull("imageUrl")) null else obj.optString("imageUrl")
+                    val originalImageUrl = if (obj.isNull("originalImageUrl")) null else obj.optString("originalImageUrl").takeIf { it.isNotBlank() }
                     importedStudios.add(
                         StudioEntity(
                             id = id,
                             stashDbId = stashDbId,
                             name = name,
                             logoUrl = logoUrl,
-                            imageUrl = imageUrl
+                            logoBgColor = logoBgColor,
+                            imageUrl = imageUrl,
+                            originalImageUrl = originalImageUrl
                         )
                     )
                 }

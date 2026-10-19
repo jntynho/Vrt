@@ -4,6 +4,7 @@ import android.content.pm.ActivityInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -49,16 +50,28 @@ import kotlinx.coroutines.launch
 
 private val DialogScrim = Color.Black.copy(alpha = 0.65f)
 
+private val EmphasizedDecelerateEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
+private val EmphasizedAccelerateEasing = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
+private const val TRANSITION_DURATION_MS = 280
+
 val LocalHazeState = compositionLocalOf<HazeState?> { null }
 
 private fun getTabOrder(screen: ScreenState): Int? {
     return when (screen) {
+        is ScreenState.Bookmarks -> -1
         is ScreenState.Home -> 0
-        is ScreenState.Actors, is ScreenState.ActorScenes -> 1
-        is ScreenState.Studios, is ScreenState.StudioScenes -> 2
-        is ScreenState.StashDb -> 3
-        is ScreenState.Settings -> 4
-        else -> null
+        is ScreenState.Actors -> 10
+        is ScreenState.ActorScenes -> 11
+        is ScreenState.Studios -> 20
+        is ScreenState.StudioScenes -> 21
+        is ScreenState.StashDb -> 30
+        is ScreenState.Onlyhaven -> 40
+        is ScreenState.OnlyhavenSavedCreators -> 41
+        is ScreenState.OnlyhavenCreatorDetails -> 42
+        is ScreenState.Kanime -> 50
+        is ScreenState.KanimeEpisodes -> 51
+        is ScreenState.Settings -> 60
+        is ScreenState.AddEditLink -> 100
     }
 }
 
@@ -290,78 +303,41 @@ fun MainAppShell(viewModel: MainViewModel) {
                                 .fillMaxSize()
                                 .haze(hazeState),
                             transitionSpec = {
-                                val isActorDialogTransition = (initialState is ScreenState.Actors && targetState is ScreenState.AddEditActor) ||
-                                        (initialState is ScreenState.AddEditActor && targetState is ScreenState.Actors)
-                                val isStudioDialogTransition = (initialState is ScreenState.Studios && targetState is ScreenState.AddEditStudio) ||
-                                        (initialState is ScreenState.AddEditStudio && targetState is ScreenState.Studios)
+                                val initialTab = getTabOrder(initialState)
+                                val targetTab = getTabOrder(targetState)
+                                val isBack = when {
+                                    navDirection == MainViewModel.NavigationDirection.BACK -> true
+                                    initialTab != null && targetTab != null && initialTab != targetTab -> targetTab < initialTab
+                                    else -> false
+                                }
 
-                                if (isActorDialogTransition || isStudioDialogTransition) {
-                                    EnterTransition.None togetherWith ExitTransition.None
-                                } else if (targetState is ScreenState.AddEditLink) {
-                                    (slideInVertically(
-                                        animationSpec = tween(320, easing = FastOutSlowInEasing)
-                                    ) { height -> height } + fadeIn(
-                                        animationSpec = tween(240, easing = LinearOutSlowInEasing)
+                                if (isBack) {
+                                    (slideInHorizontally(
+                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedDecelerateEasing)
+                                    ) { fullWidth -> -fullWidth / 6 } + fadeIn(
+                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = LinearOutSlowInEasing)
                                     )).togetherWith(
-                                        slideOutVertically(
-                                            animationSpec = tween(320, easing = FastOutSlowInEasing)
-                                        ) { height -> -height / 8 } + fadeOut(
-                                            animationSpec = tween(220, easing = FastOutLinearInEasing)
-                                        )
-                                    ).apply {
-                                        targetContentZIndex = 2f
-                                    }
-                                } else if (initialState is ScreenState.AddEditLink) {
-                                    (slideInVertically(
-                                        animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                    ) { height -> -height / 8 } + fadeIn(
-                                        animationSpec = tween(220, easing = LinearOutSlowInEasing)
-                                    )).togetherWith(
-                                        slideOutVertically(
-                                            animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                        ) { height -> height } + fadeOut(
-                                            animationSpec = tween(220, easing = FastOutLinearInEasing)
+                                        slideOutHorizontally(
+                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedAccelerateEasing)
+                                        ) { fullWidth -> fullWidth } + fadeOut(
+                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = FastOutLinearInEasing)
                                         )
                                     ).apply {
                                         targetContentZIndex = 0f
                                     }
                                 } else {
-                                    val initialTab = getTabOrder(initialState)
-                                    val targetTab = getTabOrder(targetState)
-                                    val isBack = when {
-                                        navDirection == MainViewModel.NavigationDirection.BACK -> true
-                                        initialTab != null && targetTab != null && initialTab != targetTab -> targetTab < initialTab
-                                        else -> false
-                                    }
-
-                                    if (isBack) {
-                                        (slideInHorizontally(
-                                            animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                        ) { width -> -width / 4 } + fadeIn(
-                                            animationSpec = tween(220, easing = LinearOutSlowInEasing)
-                                        )).togetherWith(
-                                            slideOutHorizontally(
-                                                animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                            ) { width -> width } + fadeOut(
-                                                animationSpec = tween(220, easing = FastOutLinearInEasing)
-                                            )
-                                        ).apply {
-                                            targetContentZIndex = 0f
-                                        }
-                                    } else {
-                                        (slideInHorizontally(
-                                            animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                        ) { width -> width } + fadeIn(
-                                            animationSpec = tween(220, easing = LinearOutSlowInEasing)
-                                        )).togetherWith(
-                                            slideOutHorizontally(
-                                                animationSpec = tween(300, easing = FastOutSlowInEasing)
-                                            ) { width -> -width / 4 } + fadeOut(
-                                                animationSpec = tween(220, easing = FastOutLinearInEasing)
-                                            )
-                                        ).apply {
-                                            targetContentZIndex = 1f
-                                        }
+                                    (slideInHorizontally(
+                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedDecelerateEasing)
+                                    ) { fullWidth -> fullWidth } + fadeIn(
+                                        animationSpec = tween(TRANSITION_DURATION_MS, easing = LinearOutSlowInEasing)
+                                    )).togetherWith(
+                                        slideOutHorizontally(
+                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = EmphasizedAccelerateEasing)
+                                        ) { fullWidth -> -fullWidth / 6 } + fadeOut(
+                                            animationSpec = tween(TRANSITION_DURATION_MS, easing = FastOutLinearInEasing)
+                                        )
+                                    ).apply {
+                                        targetContentZIndex = 1f
                                     }
                                 }
                             },
@@ -370,6 +346,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                             when (screen) {
                                 is ScreenState.Home -> HomeScreen(
                                     viewModel = viewModel,
+                                    screen = screen,
                                     onOpenDrawer = openDrawerLambda
                                 )
                                 is ScreenState.Bookmarks -> BookmarksScreen(
@@ -377,15 +354,15 @@ fun MainAppShell(viewModel: MainViewModel) {
                                 )
                                 is ScreenState.AddEditLink -> AddEditLinkScreen(viewModel, screen.linkId)
                                 is ScreenState.Actors -> ActorManagementScreen(viewModel)
-                                is ScreenState.AddEditActor -> ActorManagementScreen(viewModel)
                                 is ScreenState.ActorScenes -> HomeScreen(
                                     viewModel = viewModel,
+                                    screen = screen,
                                     onOpenDrawer = openDrawerLambda
                                 )
                                 is ScreenState.Studios -> StudioManagementScreen(viewModel)
-                                is ScreenState.AddEditStudio -> StudioManagementScreen(viewModel)
                                 is ScreenState.StudioScenes -> HomeScreen(
                                     viewModel = viewModel,
+                                    screen = screen,
                                     onOpenDrawer = openDrawerLambda
                                 )
                                 is ScreenState.StashDb -> StashDbScreen(
@@ -425,8 +402,6 @@ fun MainAppShell(viewModel: MainViewModel) {
 
                         val shouldShowBottomBar = activeVideo == null &&
                             currentScreen !is ScreenState.AddEditLink &&
-                            currentScreen !is ScreenState.AddEditActor &&
-                            currentScreen !is ScreenState.AddEditStudio &&
                             currentScreen !is ScreenState.OnlyhavenCreatorDetails &&
                             currentScreen !is ScreenState.OnlyhavenSavedCreators &&
                             currentScreen !is ScreenState.Kanime &&
@@ -445,14 +420,26 @@ fun MainAppShell(viewModel: MainViewModel) {
                                     viewModel.navigateTo(item.targetScreen)
                                 },
                                 onItemReselected = { item ->
-                                    if (item.id == "home") {
-                                        if (currentScreen is ScreenState.ActorScenes || currentScreen is ScreenState.StudioScenes) {
-                                            viewModel.navigateTo(ScreenState.Home)
-                                        } else {
-                                            if (viewModel.searchQuery.value.isNotEmpty()) {
-                                                viewModel.searchQuery.value = ""
+                                    when (item.id) {
+                                        "home" -> {
+                                            if (currentScreen is ScreenState.ActorScenes || currentScreen is ScreenState.StudioScenes) {
+                                                viewModel.navigateTo(ScreenState.Home)
+                                            } else {
+                                                if (viewModel.searchQuery.value.isNotEmpty()) {
+                                                    viewModel.searchQuery.value = ""
+                                                }
+                                                viewModel.triggerScrollToTop()
                                             }
-                                            viewModel.triggerScrollToTop()
+                                        }
+                                        "actor" -> {
+                                            if (currentScreen is ScreenState.ActorScenes) {
+                                                viewModel.navigateTo(ScreenState.Actors)
+                                            }
+                                        }
+                                        "studio" -> {
+                                            if (currentScreen is ScreenState.StudioScenes) {
+                                                viewModel.navigateTo(ScreenState.Studios)
+                                            }
                                         }
                                     }
                                 },

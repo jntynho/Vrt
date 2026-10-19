@@ -10,7 +10,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -29,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.local.entity.StudioEntity
+import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalBetaTestPrivacy
 import com.example.ui.theme.LocalVaultPalette
 import com.example.ui.theme.privacyImageBlur
@@ -37,6 +36,7 @@ import java.util.Locale
 @Composable
 fun StudioDetailsDialog(
     studio: StudioEntity,
+    existingNames: List<String> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (StudioEntity) -> Unit,
     onDeleteCascade: (String) -> Unit
@@ -65,17 +65,27 @@ fun StudioDetailsDialog(
     var editedName by remember(studio.id) { mutableStateOf(studio.name) }
     var editedLogoUrl by remember(studio.id) { mutableStateOf(studio.logoUrl ?: "") }
 
+    val isDuplicateName = remember(editedName, existingNames, studio.name) {
+        val trimmed = editedName.trim()
+        trimmed.isNotEmpty() &&
+            !trimmed.equals(studio.name, ignoreCase = true) &&
+            existingNames.any { it.equals(trimmed, ignoreCase = true) }
+    }
+
+    val palette = LocalVaultPalette.current
+    val accent = LocalAccentColor.current
     val isLight = isAppLightTheme()
     val circleBorderColor = if (isLight) Color.Black else Color.White
     val isBetaTestStudio = LocalBetaTestPrivacy.current
-    val palette = LocalVaultPalette.current
 
     val currentGray = (gradientFraction * 255).toInt().coerceIn(0, 255)
     val currentBgColor = if (isCustomBgEnabled) Color(currentGray, currentGray, currentGray) else Color(0xFF000000)
     val hexString = String.format(Locale.US, "#%02X%02X%02X", currentGray, currentGray, currentGray)
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (isAdjustMode) isAdjustMode = false else onDismiss()
+        },
         modifier = Modifier.vaultTopGlow(),
         containerColor = palette.dialogBg,
         shape = VaultDialogShape,
@@ -88,6 +98,7 @@ fun StudioDetailsDialog(
                 ) {
                     Text(
                         text = "Studio Details",
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleLarge
                     )
@@ -98,7 +109,7 @@ fun StudioDetailsDialog(
                         Icon(
                             painter = painterResource(id = R.drawable.ic_details_adjust_brush),
                             contentDescription = "Adjust Logo Background",
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = accent
                         )
                     }
                 }
@@ -113,7 +124,7 @@ fun StudioDetailsDialog(
                         modifier = Modifier
                             .size(42.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF3B3C3E))
+                            .background(palette.surface)
                             .testTag("adjust_logo_bg_back_button")
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
@@ -131,6 +142,7 @@ fun StudioDetailsDialog(
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = "Logo Background",
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleLarge
                     )
@@ -154,6 +166,13 @@ fun StudioDetailsDialog(
                             .fillMaxWidth()
                             .testTag("studio_name_static_input")
                     )
+                    if (isDuplicateName) {
+                        Text(
+                            text = "A studio with this name already exists",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 12.sp
+                        )
+                    }
 
                     // Editable Image URL Field
                     SceneInputField(
@@ -222,7 +241,7 @@ fun StudioDetailsDialog(
                                         onClick = { confirmDeleteStudio = false },
                                         shape = CircleShape
                                     ) {
-                                        Text("Cancel")
+                                        Text("Cancel", color = palette.textSecondary)
                                     }
                                     Spacer(Modifier.width(6.dp))
                                     Button(
@@ -252,32 +271,25 @@ fun StudioDetailsDialog(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     // Big Circular Preview with dynamic background color
+                    val currentPreviewLogoUrl = editedLogoUrl.trim().ifBlank { studio.logoUrl ?: "" }
                     Box(
                         modifier = Modifier
                             .size(160.dp)
                             .shadow(3.dp, CircleShape)
-                            .graphicsLayer {
-                                shape = CircleShape
-                                clip = true
-                            }
                             .clip(CircleShape)
                             .background(currentBgColor),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (!studio.logoUrl.isNullOrBlank()) {
+                        if (currentPreviewLogoUrl.isNotBlank()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .graphicsLayer {
-                                        shape = CircleShape
-                                        clip = true
-                                    }
                                     .clip(CircleShape)
                                     .padding(20.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 AsyncImage(
-                                    model = studio.logoUrl,
+                                    model = currentPreviewLogoUrl,
                                     contentDescription = studio.name,
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
@@ -297,7 +309,7 @@ fun StudioDetailsDialog(
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_nav_studio),
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = palette.textMuted,
                                     modifier = Modifier.size(64.dp)
                                 )
                             }
@@ -325,13 +337,13 @@ fun StudioDetailsDialog(
                                 text = "Background Color",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = palette.textPrimary
                             )
                             Text(
                                 text = if (isCustomBgEnabled) hexString else "Default",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = accent
                             )
                         }
 
@@ -354,9 +366,10 @@ fun StudioDetailsDialog(
                         val finalHex = if (isCustomBgEnabled) hexString else null
                         onSave(studio.copy(name = editedName.trim().ifBlank { studio.name }, logoUrl = editedLogoUrl.trim().ifEmpty { null }, logoBgColor = finalHex))
                     },
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                     shape = CircleShape
                 ) {
-                    Text("Save")
+                    Text("Save", fontWeight = FontWeight.Bold)
                 }
             } else {
                 Button(
@@ -365,10 +378,12 @@ fun StudioDetailsDialog(
                         onSave(studio.copy(name = editedName.trim().ifBlank { studio.name }, logoUrl = editedLogoUrl.trim().ifEmpty { null }, logoBgColor = finalHex))
                         onDismiss()
                     },
+                    enabled = editedName.isNotBlank() && !isDuplicateName,
+                    colors = ButtonDefaults.buttonColors(containerColor = accent),
                     shape = CircleShape,
                     modifier = Modifier.testTag("studio_details_save_button")
                 ) {
-                    Text("Save")
+                    Text("Save", fontWeight = FontWeight.Bold)
                 }
             }
         },
@@ -378,14 +393,14 @@ fun StudioDetailsDialog(
                     onClick = onDismiss,
                     shape = CircleShape
                 ) {
-                    Text("Close")
+                    Text("Close", color = palette.textSecondary)
                 }
             } else {
                 TextButton(
                     onClick = { isAdjustMode = false },
                     shape = CircleShape
                 ) {
-                    Text("Back")
+                    Text("Back", color = palette.textSecondary)
                 }
             }
         }

@@ -40,6 +40,7 @@ import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
 import com.example.ui.components.SearchableTophead
 import com.example.ui.components.VaultDialogShape
+import com.example.ui.components.isAppLightTheme
 import com.example.ui.components.vaultTopGlow
 import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalBetaTestPrivacy
@@ -58,13 +59,11 @@ fun StudioManagementScreen(
 ) {
     val palette = LocalVaultPalette.current
     val accent = LocalAccentColor.current
-    val isLight = palette.name.equals("light", ignoreCase = true)
+    val isLight = isAppLightTheme()
     val circleBorderColor = if (isLight) Color.Black else Color.White
 
     val studios by viewModel.allStudios.collectAsStateWithLifecycle()
-    val studioSceneCounts by viewModel.studioSceneCounts.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val currentScreen by viewModel.screenState.collectAsStateWithLifecycle()
     val showCards = settings.showManagementCards
 
     var showAddDialog by remember { mutableStateOf(false) }
@@ -79,13 +78,6 @@ fun StudioManagementScreen(
     BackHandler(enabled = isSearchExpanded) {
         isSearchExpanded = false
         searchQuery = ""
-    }
-
-    // Auto-open Add Dialog if navigated via ScreenState.AddEditStudio
-    LaunchedEffect(currentScreen) {
-        if (currentScreen is ScreenState.AddEditStudio) {
-            showAddDialog = true
-        }
     }
 
     val scrollKey = "management_studios"
@@ -112,10 +104,14 @@ fun StudioManagementScreen(
         }
     }
 
-    // Reset scroll to top when search query changes to prevent index desync
+    // Reset scroll to top only when search query actively changes to prevent index desync
+    var previousSearchQuery by rememberSaveable { mutableStateOf(searchQuery) }
     LaunchedEffect(searchQuery) {
-        if (searchQuery.isNotEmpty()) {
-            gridState.scrollToItem(0)
+        if (previousSearchQuery != searchQuery) {
+            previousSearchQuery = searchQuery
+            if (searchQuery.isNotEmpty()) {
+                gridState.scrollToItem(0)
+            }
         }
     }
 
@@ -352,7 +348,6 @@ fun StudioManagementScreen(
                                     ImageRequest.Builder(context)
                                         .data(studio.logoUrl)
                                         .size(220, 220)
-                                        .crossfade(true)
                                         .crossfade(150)
                                         .build()
                                 }
@@ -520,6 +515,7 @@ fun StudioManagementScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
+                        val isBetaTest = LocalBetaTestPrivacy.current
                         Box(
                             modifier = Modifier
                                 .size(54.dp)
@@ -532,9 +528,19 @@ fun StudioManagementScreen(
                                 AsyncImage(
                                     model = logoUrl.trim(),
                                     contentDescription = "Preview",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(6.dp)
+                                        .privacyImageBlur(isBetaTest)
                                 )
+                                if (isBetaTest) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(PrivacyScrim)
+                                    )
+                                }
                             } else {
                                 Icon(
                                     painter = painterResource(id = R.drawable.ic_nav_studio),

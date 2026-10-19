@@ -28,6 +28,7 @@ import com.example.ui.theme.LocalVaultPalette
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
+    screen: ScreenState? = null,
     onOpenDrawer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -42,23 +43,30 @@ fun HomeScreen(
     val resolvingCardId by viewModel.resolvingCardId.collectAsStateWithLifecycle()
     val videoResolutionError by viewModel.videoResolutionError.collectAsStateWithLifecycle()
     val activeInlineVideo by viewModel.activeInlineVideo.collectAsStateWithLifecycle()
-    val currentScreen by viewModel.screenState.collectAsStateWithLifecycle()
+    val currentScreenState by viewModel.screenState.collectAsStateWithLifecycle()
+    val currentScreen = screen ?: currentScreenState
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val isInitialDataLoaded by viewModel.isInitialDataLoaded.collectAsStateWithLifecycle()
 
     val targetActor = remember(currentScreen, actors) {
         if (currentScreen is ScreenState.ActorScenes) {
-            val id = (currentScreen as ScreenState.ActorScenes).actorId
-            actors.firstOrNull { it.id == id || it.name.equals(id, ignoreCase = true) }
-                ?: ActorEntity(id = id, name = id)
+            val id = currentScreen.actorId.trim()
+            actors.firstOrNull { 
+                it.id == id || 
+                it.name.equals(id, ignoreCase = true) ||
+                (!it.stashDbId.isNullOrBlank() && it.stashDbId.equals(id, ignoreCase = true))
+            } ?: ActorEntity(id = id, name = id)
         } else null
     }
 
     val targetStudio = remember(currentScreen, studios) {
         if (currentScreen is ScreenState.StudioScenes) {
-            val id = (currentScreen as ScreenState.StudioScenes).studioId
-            studios.firstOrNull { it.id == id || it.name.equals(id, ignoreCase = true) }
-                ?: StudioEntity(id = id, name = id)
+            val id = currentScreen.studioId.trim()
+            studios.firstOrNull { 
+                it.id == id || 
+                it.name.equals(id, ignoreCase = true) ||
+                (!it.stashDbId.isNullOrBlank() && it.stashDbId.equals(id, ignoreCase = true))
+            } ?: StudioEntity(id = id, name = id)
         } else null
     }
 
@@ -66,12 +74,48 @@ fun HomeScreen(
     val displayedLinks = remember(links, currentScreen, targetActor, targetStudio) {
         when (currentScreen) {
             is ScreenState.ActorScenes -> {
-                val actorId = (currentScreen as ScreenState.ActorScenes).actorId
-                links.filter { it.actorIds.contains(actorId) || (targetActor != null && it.actorIds.contains(targetActor.name)) }
+                val rawId = currentScreen.actorId.trim()
+                val validIds = buildSet {
+                    add(rawId)
+                    add(rawId.lowercase())
+                    if (targetActor != null) {
+                        add(targetActor.id)
+                        add(targetActor.id.lowercase())
+                        add(targetActor.name)
+                        add(targetActor.name.trim().lowercase())
+                        targetActor.stashDbId?.let {
+                            add(it)
+                            add(it.lowercase())
+                        }
+                    }
+                }
+                links.filter { link ->
+                    link.actorIds.any { id ->
+                        validIds.contains(id) || validIds.contains(id.trim().lowercase())
+                    }
+                }
             }
             is ScreenState.StudioScenes -> {
-                val studioId = (currentScreen as ScreenState.StudioScenes).studioId
-                links.filter { it.studioIds.contains(studioId) || (targetStudio != null && it.studioIds.contains(targetStudio.name)) }
+                val rawId = currentScreen.studioId.trim()
+                val validIds = buildSet {
+                    add(rawId)
+                    add(rawId.lowercase())
+                    if (targetStudio != null) {
+                        add(targetStudio.id)
+                        add(targetStudio.id.lowercase())
+                        add(targetStudio.name)
+                        add(targetStudio.name.trim().lowercase())
+                        targetStudio.stashDbId?.let {
+                            add(it)
+                            add(it.lowercase())
+                        }
+                    }
+                }
+                links.filter { link ->
+                    link.studioIds.any { id ->
+                        validIds.contains(id) || validIds.contains(id.trim().lowercase())
+                    }
+                }
             }
             else -> links
         }
@@ -115,11 +159,9 @@ fun HomeScreen(
     var showEditStudioDialog by remember { mutableStateOf(false) }
 
     val scrollKey = remember(currentScreen, targetActor?.id, targetStudio?.id) {
-        when {
-            targetActor != null -> "actor_scenes_${targetActor.id}"
-            targetStudio != null -> "studio_scenes_${targetStudio.id}"
-            currentScreen is ScreenState.ActorScenes -> "actor_scenes_${(currentScreen as ScreenState.ActorScenes).actorId}"
-            currentScreen is ScreenState.StudioScenes -> "studio_scenes_${(currentScreen as ScreenState.StudioScenes).studioId}"
+        when (currentScreen) {
+            is ScreenState.ActorScenes -> "actor_scenes_${targetActor?.id ?: currentScreen.actorId}"
+            is ScreenState.StudioScenes -> "studio_scenes_${targetStudio?.id ?: currentScreen.studioId}"
             else -> "feed_home"
         }
     }
@@ -250,7 +292,7 @@ fun HomeScreen(
                         )
                         Text(
                             text = if (searchQuery.isNotEmpty()) "Try searching with different keywords"
-                                   else if (targetActor != null || targetStudio != null) "Tap the '+' icon to link scenes to this entity."
+                                   else if (targetActor != null || targetStudio != null) "No scenes associated with this ${if (targetActor != null) "actor" else "studio"} yet."
                                    else "Tap the '+' icon in the top bar to add scenes.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textSecondary
@@ -355,9 +397,13 @@ fun HomeScreen(
 
     // Actor Details & Deletion Dialog
     if (showEditActorDialog && targetActor != null) {
+        val otherActorNames = remember(actors, targetActor.id) {
+            actors.filter { it.id != targetActor.id }.map { it.name }
+        }
         ActorDetailsDialog(
             actor = targetActor,
             stashDbApiKey = settings.stashDbApiKey,
+            existingNames = otherActorNames,
             onDismiss = { showEditActorDialog = false },
             onSave = { updatedActor ->
                 viewModel.saveActor(updatedActor)
@@ -373,8 +419,12 @@ fun HomeScreen(
 
     // Studio Details & Deletion Dialog
     if (showEditStudioDialog && targetStudio != null) {
+        val otherStudioNames = remember(studios, targetStudio.id) {
+            studios.filter { it.id != targetStudio.id }.map { it.name }
+        }
         StudioDetailsDialog(
             studio = targetStudio,
+            existingNames = otherStudioNames,
             onDismiss = { showEditStudioDialog = false },
             onSave = { updatedStudio ->
                 viewModel.saveStudio(updatedStudio)

@@ -52,9 +52,27 @@ fun HomeTopAppBar(
     var isSearchExpanded by remember { mutableStateOf(searchQuery.isNotEmpty()) }
     var showSortMenu by remember { mutableStateOf(false) }
 
+    // Gracefully collapse search bar first on system back gesture
+    androidx.activity.compose.BackHandler(enabled = isSearchExpanded) {
+        isSearchExpanded = false
+        onSearchQueryChange("")
+    }
+
     val headerTitle = when {
-        targetActor != null -> targetActor.name
-        targetStudio != null -> targetStudio.name
+        targetActor != null -> {
+            if (targetActor.name.isNotBlank() && targetActor.name != targetActor.id) {
+                targetActor.name
+            } else {
+                actorsMap[targetActor.id] ?: targetActor.name
+            }
+        }
+        targetStudio != null -> {
+            if (targetStudio.name.isNotBlank() && targetStudio.name != targetStudio.id) {
+                targetStudio.name
+            } else {
+                studiosMap[targetStudio.id] ?: targetStudio.name
+            }
+        }
         currentScreen is ScreenState.ActorScenes -> {
             val id = currentScreen.actorId
             actorsMap[id] ?: id
