@@ -16,7 +16,7 @@ import com.example.data.local.entity.*
         StudioEntity::class,
         SettingsEntity::class
     ],
-    version = 20,
+    version = 21,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -147,6 +147,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_20_21 = object : androidx.room.migration.Migration(20, 21) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN adaptiveCoverAspectRatio INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -163,7 +169,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_16_17,
                         MIGRATION_17_18,
                         MIGRATION_18_19,
-                        MIGRATION_19_20
+                        MIGRATION_19_20,
+                        MIGRATION_20_21
                     )
                     .fallbackToDestructiveMigration(true)
                     .build()

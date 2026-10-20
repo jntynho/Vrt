@@ -76,6 +76,7 @@ data class SettingsEntity(
     val blurCovers: Boolean = false,
     val betaTestPrivacy: Boolean = false,
     val defaultAspectRatio: String = "16:9",
+    val adaptiveCoverAspectRatio: Boolean = true,
     val showManagementCards: Boolean = true,
     val enableVideoPlayerGestures: Boolean = true,
     val transitionStyle: Int = 0,

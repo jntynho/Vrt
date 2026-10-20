@@ -143,6 +143,8 @@ fun SettingsDisplaySection(
     onAccentChange: (String) -> Unit,
     showManagementCards: Boolean,
     onShowManagementCardsChange: (Boolean) -> Unit,
+    adaptiveCoverAspectRatio: Boolean = true,
+    onAdaptiveCoverAspectRatioChange: (Boolean) -> Unit = {},
     enableVideoPlayerGestures: Boolean,
     onEnableVideoPlayerGesturesChange: (Boolean) -> Unit,
     navBarTransparency: Float = 0.65f,
@@ -283,6 +285,23 @@ fun SettingsDisplaySection(
                     )
                 },
                 onClick = { onShowManagementCardsChange(!showManagementCards) }
+            )
+        }
+
+        // Adaptive Cover Aspect Ratio toggle in Grouped Card
+        GroupedCard {
+            SettingsRow(
+                title = "Adaptive Cover Aspect Ratio",
+                subtitle = "Adapt link cards to match each cover image's natural dimensions and smoothly transition to 16:9 when playing video. When turned off, all cards default to 16:9.",
+                trailing = {
+                    Switch(
+                        checked = adaptiveCoverAspectRatio,
+                        onCheckedChange = onAdaptiveCoverAspectRatioChange,
+                        colors = museSwitchColors(),
+                        modifier = Modifier.testTag("adaptive_cover_aspect_ratio_switch")
+                    )
+                },
+                onClick = { onAdaptiveCoverAspectRatioChange(!adaptiveCoverAspectRatio) }
             )
         }
 

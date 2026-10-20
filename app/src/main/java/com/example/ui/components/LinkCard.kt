@@ -16,6 +16,7 @@ import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.TransformOrigin
@@ -121,6 +122,11 @@ private const val MIN_ADAPTIVE_COVER_ASPECT_RATIO = 0.72f
 private const val MAX_ADAPTIVE_COVER_ASPECT_RATIO = 2.40f
 
 /**
+ * Silky-smooth Apple/Material-3 Emphasized Decelerate curve for geometric height morphing.
+ */
+private val AdaptiveMorphEasing = CubicBezierEasing(0.22f, 1.0f, 0.36f, 1.0f)
+
+/**
  * Thread-safe in-memory cache mapping cover image URLs to their resolved aspect ratios (width / height).
  * Prevents layout jumps or recomposition jitter when scrolling back and forth in LazyColumn.
  */
@@ -169,6 +175,7 @@ fun LinkCard(
     onEnterPipInlineVideo: ((positionMs: Long) -> Unit)? = null,
     exoPlayer: androidx.media3.exoplayer.ExoPlayer? = null,
     enableVideoPlayerGestures: Boolean = true,
+    adaptiveCoverAspectRatio: Boolean = true,
     onImageError: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -393,56 +400,93 @@ fun LinkCard(
     }
 
     val isVideoPlaybackMode = inlinePlayback != null || isResolvingThisCard
-    val targetCardAspectRatio = if (isVideoPlaybackMode) {
-        DEFAULT_COVER_ASPECT_RATIO
-    } else {
-        coverAspectRatio
+
+    // Only animate height ratio when transitioning into/out of video playback or toggling the Display setting.
+    // Initial cover ratio detection snaps in the exact same frame as the image so card & cover never separate.
+    var isMorphTransitionActive by remember(link.id) { mutableStateOf(false) }
+    var lastVideoPlaybackMode by remember(link.id) { mutableStateOf(isVideoPlaybackMode) }
+    var lastAdaptiveSetting by remember(link.id) { mutableStateOf(adaptiveCoverAspectRatio) }
+
+    if (lastVideoPlaybackMode != isVideoPlaybackMode || lastAdaptiveSetting != adaptiveCoverAspectRatio) {
+        isMorphTransitionActive = true
+        lastVideoPlaybackMode = isVideoPlaybackMode
+        lastAdaptiveSetting = adaptiveCoverAspectRatio
     }
 
-    val animatedCardAspectRatio by animateFloatAsState(
-        targetValue = targetCardAspectRatio,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
+    // Interpolate inverse aspect ratio (height / width) so vertical pixel height changes linearly & smoothly.
+    // When adaptiveCoverAspectRatio is turned off in Display settings, strictly use 16:9 as default.
+    val targetHeightRatio = if (!adaptiveCoverAspectRatio || isVideoPlaybackMode) {
+        1f / DEFAULT_COVER_ASPECT_RATIO
+    } else {
+        1f / coverAspectRatio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+    }
+
+    val animatedHeightRatio by animateFloatAsState(
+        targetValue = targetHeightRatio,
+        animationSpec = if (isMorphTransitionActive) {
+            tween(
+                durationMillis = 360,
+                easing = AdaptiveMorphEasing
+            )
+        } else {
+            snap()
+        },
+        finishedListener = {
+            isMorphTransitionActive = false
+        },
+        label = "adaptive_card_height_ratio"
+    )
+
+    val effectiveAspectRatio = (1f / animatedHeightRatio.coerceAtLeast(0.1f))
+        .coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+
+    val coverImageAlpha by animateFloatAsState(
+        targetValue = if (isImageLoaded) 1f else 0f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "cover_image_alpha"
+    )
+
+    val inlinePlayerAlpha by animateFloatAsState(
+        targetValue = if (inlinePlayback != null) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (inlinePlayback != null) 280 else 220,
+            easing = FastOutSlowInEasing
         ),
-        label = "adaptive_card_aspect_ratio"
+        label = "inline_player_crossfade"
+    )
+
+    val resolvingOverlayAlpha by animateFloatAsState(
+        targetValue = if (isResolvingThisCard && (resolvingStatus != null || resolutionError != null)) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 220,
+            easing = FastOutSlowInEasing
+        ),
+        label = "resolving_overlay_crossfade"
     )
 
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .clipToBounds()
             .testTag("scene_card_${link.id}")
     ) {
-        // 1. Adaptive Cover Thumbnail or 16:9 Inline Video Player
+        // 1. Unified Adaptive Cover & 16:9 Inline Video Container (Single-pass layout with lower Metadata surface)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(animatedCardAspectRatio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO))
-                .background(if (isResolvingThisCard) palette.surface else palette.cardBg)
+                .aspectRatio(effectiveAspectRatio)
+                .background(palette.surface)
                 .clipToBounds()
                 .clickable(
-                    enabled = inlinePlayback == null,
+                    enabled = inlinePlayback == null && !isResolvingThisCard,
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
                 ) {
                     handleCoverTap()
                 }
         ) {
-            if (inlinePlayback != null) {
-                InlineCardPlayer(
-                    title = inlinePlayback.title,
-                    qualities = inlinePlayback.qualities,
-                    subtitles = inlinePlayback.subtitles,
-                    defaultHeaders = inlinePlayback.headers,
-                    exoPlayer = exoPlayer,
-                    enableGestures = enableVideoPlayerGestures,
-                    onClose = onCloseInlineVideo,
-                    onFullscreen = onFullscreenInlineVideo,
-                    onFullscreenWithMode = onFullscreenInlineVideoWithMode,
-                    onEnterPip = onEnterPipInlineVideo,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
+            // Base Layer: Cover Image (hidden immediately when pressing play / resolving or during inline playback)
+            if (inlinePlayback == null && !isResolvingThisCard) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -452,82 +496,86 @@ fun LinkCard(
                             scaleY = coverZoomScale
                         }
                 ) {
-                    if (!isImageLoaded && link.coverImage.isNotEmpty() && !isImageError) {
-                        val shimmerBrush = ShimmerBrush(targetValue = 900f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(palette.cardBg)
-                                .background(shimmerBrush)
-                        )
-                    }
-
-                    val isBetaTest = LocalBetaTestPrivacy.current
-
-                    if (link.coverImage.isNotEmpty() && !isImageError) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(link.coverImage)
-                                .crossfade(260)
-                                .build(),
-                            contentDescription = link.title,
-                            contentScale = ContentScale.Crop,
-                            onSuccess = { successState ->
-                                val drawable = successState.result.drawable
-                                val w = drawable.intrinsicWidth
-                                val h = drawable.intrinsicHeight
-                                if (w > 0 && h > 0) {
-                                    val rawRatio = w.toFloat() / h.toFloat()
-                                    val clampedRatio = rawRatio.coerceIn(
-                                        MIN_ADAPTIVE_COVER_ASPECT_RATIO,
-                                        MAX_ADAPTIVE_COVER_ASPECT_RATIO
-                                    )
-                                    CoverAspectRatioCache.put(link.coverImage, clampedRatio)
-                                    coverAspectRatio = clampedRatio
-                                }
-                                isImageLoaded = true
-                                isImageError = false
-                            },
-                            onError = {
-                                isImageLoaded = true
-                                isImageError = true
-                                coverAspectRatio = DEFAULT_COVER_ASPECT_RATIO
-                                onImageError?.invoke()
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .privacyImageBlur(isBetaTest)
-                                .then(
-                                    if (menuProgress > 0.01f) {
-                                        Modifier.blur(
-                                            radius = (8f * menuProgress).dp,
-                                            edgeTreatment = BlurredEdgeTreatment.Rectangle
-                                        )
-                                    } else Modifier
-                                )
-                        )
-                        if (isBetaTest) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.28f))
-                            )
-                        }
-                    } else {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Image,
-                                contentDescription = "No Cover Image",
-                                tint = palette.textSecondary.copy(alpha = 0.35f),
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
-                    }
+                if (!isImageLoaded && link.coverImage.isNotEmpty() && !isImageError) {
+                    val shimmerBrush = ShimmerBrush(targetValue = 900f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(palette.cardBg)
+                            .background(shimmerBrush)
+                    )
                 }
 
+                val isBetaTest = LocalBetaTestPrivacy.current
+
+                if (link.coverImage.isNotEmpty() && !isImageError) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(link.coverImage)
+                            .crossfade(false)
+                            .build(),
+                        contentDescription = link.title,
+                        contentScale = ContentScale.Crop,
+                        onSuccess = { successState ->
+                            val drawable = successState.result.drawable
+                            val w = drawable.intrinsicWidth
+                            val h = drawable.intrinsicHeight
+                            if (w > 0 && h > 0) {
+                                val rawRatio = w.toFloat() / h.toFloat()
+                                val clampedRatio = rawRatio.coerceIn(
+                                    MIN_ADAPTIVE_COVER_ASPECT_RATIO,
+                                    MAX_ADAPTIVE_COVER_ASPECT_RATIO
+                                )
+                                CoverAspectRatioCache.put(link.coverImage, clampedRatio)
+                                coverAspectRatio = clampedRatio
+                            }
+                            isImageLoaded = true
+                            isImageError = false
+                        },
+                        onError = {
+                            isImageLoaded = true
+                            isImageError = true
+                            coverAspectRatio = DEFAULT_COVER_ASPECT_RATIO
+                            onImageError?.invoke()
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = coverImageAlpha }
+                            .privacyImageBlur(isBetaTest)
+                            .then(
+                                if (menuProgress > 0.01f) {
+                                    Modifier.blur(
+                                        radius = (8f * menuProgress).dp,
+                                        edgeTreatment = BlurredEdgeTreatment.Rectangle
+                                    )
+                                } else Modifier
+                            )
+                    )
+                    if (isBetaTest) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.28f))
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Image,
+                            contentDescription = "No Cover Image",
+                            tint = palette.textSecondary.copy(alpha = 0.35f),
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
+                }
+            }
+            }
+
+            // Action Menu Scrim & Buttons Layer (when not playing inline video)
+            if (inlinePlayback == null) {
                 if (menuProgress > 0.001f) {
                     Box(
                         modifier = Modifier
@@ -679,7 +727,30 @@ fun LinkCard(
                 }
             }
 
-            // Inline Resolution & Progress Overlay
+            // Inline Video Player Layer (smoothly crossfades over the morphing cover)
+            if (inlinePlayback != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = inlinePlayerAlpha }
+                ) {
+                    InlineCardPlayer(
+                        title = inlinePlayback.title,
+                        qualities = inlinePlayback.qualities,
+                        subtitles = inlinePlayback.subtitles,
+                        defaultHeaders = inlinePlayback.headers,
+                        exoPlayer = exoPlayer,
+                        enableGestures = enableVideoPlayerGestures,
+                        onClose = onCloseInlineVideo,
+                        onFullscreen = onFullscreenInlineVideo,
+                        onFullscreenWithMode = onFullscreenInlineVideoWithMode,
+                        onEnterPip = onEnterPipInlineVideo,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            // Inline Resolution & Progress Overlay (solid surface, cover is completely hidden)
             if (isResolvingThisCard && resolvingStatus != null) {
                 Box(
                     modifier = Modifier

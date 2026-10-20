@@ -336,10 +336,7 @@ fun HomeScreen(
                         modifier = Modifier.animateItem(
                             fadeInSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                             fadeOutSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
-                            placementSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessLow
-                            )
+                            placementSpec = null
                         )
                     ) {
                         LinkCard(
@@ -387,7 +384,8 @@ fun HomeScreen(
                                 viewModel.enterPipFromInline(link.id, currentPos)
                             },
                             exoPlayer = if (activeInlineVideo?.cardId == link.id) viewModel.sharedPlayerManager.getPlayer() else null,
-                            enableVideoPlayerGestures = settings.enableVideoPlayerGestures
+                            enableVideoPlayerGestures = settings.enableVideoPlayerGestures,
+                            adaptiveCoverAspectRatio = settings.adaptiveCoverAspectRatio
                         )
                     }
                 }

@@ -200,6 +200,10 @@ fun SettingsScreen(
                             onShowManagementCardsChange = {
                                 viewModel.updateSettings(currentSettings.copy(showManagementCards = it))
                             },
+                            adaptiveCoverAspectRatio = currentSettings.adaptiveCoverAspectRatio,
+                            onAdaptiveCoverAspectRatioChange = {
+                                viewModel.updateSettings(currentSettings.copy(adaptiveCoverAspectRatio = it))
+                            },
                             enableVideoPlayerGestures = currentSettings.enableVideoPlayerGestures,
                             onEnableVideoPlayerGesturesChange = {
                                 viewModel.updateSettings(currentSettings.copy(enableVideoPlayerGestures = it))

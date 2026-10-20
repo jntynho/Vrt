@@ -313,7 +313,8 @@ fun BookmarksScreen(
                         onFullscreenInlineVideoWithMode = { pos, startInLandscape -> viewModel.openFullscreenFromInline(link.id, pos, startInLandscape = startInLandscape) },
                         onEnterPipInlineVideo = { pos -> viewModel.enterPipFromInline(link.id, pos) },
                         exoPlayer = if (activeInlineVideo?.cardId == link.id) viewModel.sharedPlayerManager.getPlayer() else null,
-                        enableVideoPlayerGestures = settings.enableVideoPlayerGestures
+                        enableVideoPlayerGestures = settings.enableVideoPlayerGestures,
+                        adaptiveCoverAspectRatio = settings.adaptiveCoverAspectRatio
                     )
                 }
             }
