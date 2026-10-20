@@ -545,6 +545,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val primaryQuality = finalQualities.firstOrNull { it.isDefault } ?: finalQualities.first()
                 val isDebridStream = com.example.network.torrent.MagnetParser.parseHash(trimmed) != null ||
+                    com.example.network.Scraping.isSupportedUrl(trimmed) ||
                     primaryQuality.url.contains("real-debrid.com", ignoreCase = true) ||
                     primaryQuality.url.contains("torbox.app", ignoreCase = true)
 

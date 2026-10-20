@@ -407,7 +407,12 @@ fun PreparePlayerMediaSource(
         onBufferingChanged(true)
 
         try {
-            val streamUrl = if (url.startsWith("magnet:", ignoreCase = true) || com.example.network.torrent.MagnetParser.parseHash(url) != null) {
+            var resolvedStreamHeaders: Map<String, String> = emptyMap()
+            val streamUrl = if (
+                url.startsWith("magnet:", ignoreCase = true) ||
+                com.example.network.torrent.MagnetParser.parseHash(url) != null ||
+                com.example.network.Scraping.isSupportedUrl(url)
+            ) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val db = com.example.data.local.AppDatabase.getInstance(context)
                     val settings = db.settingsDao().getSettingsOnce()
@@ -422,13 +427,21 @@ fun PreparePlayerMediaSource(
                         realDebridApiKey = settings?.realDebridApiKey.orEmpty(),
                         debridOrder = order
                     )
-                    resolved.qualities.firstOrNull()?.url ?: url
+                    val firstStream = resolved.qualities.firstOrNull()
+                    resolvedStreamHeaders = resolved.headers + (firstStream?.headers ?: emptyMap())
+                    firstStream?.url ?: url
                 }
             } else {
                 url
             }
 
-            val mediaSource = PlayerFactory.buildMediaSource(context, streamUrl, activeHeaders, formatHint = quality.format, subtitles = subtitles)
+            val mediaSource = PlayerFactory.buildMediaSource(
+                context,
+                streamUrl,
+                activeHeaders + resolvedStreamHeaders,
+                formatHint = quality.format,
+                subtitles = subtitles
+            )
             val currentPosMs = player.currentPosition.coerceAtLeast(0L)
             val resumePosition = if (isFirstLoad) {
                 isFirstLoad = false

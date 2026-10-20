@@ -350,6 +350,7 @@ fun LinkCard(
         val trimmed = url.trim()
         val ext = MediaUrlValidator.mediaExtensionOf(trimmed)
         val isStreamableVideo = ext in listOf("mp4", "m3u8", "mkv", "webm", "mpd", "ts", "mov", "avi") ||
+                com.example.network.Scraping.isSupportedUrl(trimmed) ||
                 trimmed.contains("/dash/", ignoreCase = true) ||
                 trimmed.contains(".m3u8", ignoreCase = true) ||
                 trimmed.contains(".mpd", ignoreCase = true) ||

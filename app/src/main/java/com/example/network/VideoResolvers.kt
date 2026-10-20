@@ -233,6 +233,17 @@ object VideoResolvers {
             MagnetParser.parseHash(decoded) != null || isHosterUrl(decoded) -> {
                 resolveDebrid(decoded, torboxApiKey, realDebridApiKey, debridOrder)
             }
+            Scraping.isSupportedUrl(decoded) -> {
+                val streams = Scraping.extractStreams(decoded)
+                val primaryHeaders = streams.firstOrNull { it.isDefault }?.headers
+                    ?: streams.firstOrNull()?.headers
+                    ?: emptyMap()
+                ResolvedVideo(
+                    title = "Media Stream",
+                    qualities = streams,
+                    headers = primaryHeaders
+                )
+            }
             decoded.contains("pornhub.com", ignoreCase = true) -> {
                 resolvePornhub(decoded)
             }
