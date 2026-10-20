@@ -299,9 +299,9 @@ fun PlayerControlsOverlay(
                     )
                 }
 
-            // Center 3-Button Controls (10s Rewind, Play/Pause, 10s Forward) - Hidden during Buffering and in VR Mode
+            // Center 3-Button Controls (10s Rewind, Play/Pause, 10s Forward) - Hidden during Buffering
             AnimatedVisibility(
-                visible = !isBuffering && !isVrMode,
+                visible = !isBuffering,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(150)),
                 modifier = Modifier.align(Alignment.Center)
@@ -406,31 +406,6 @@ fun PlayerControlsOverlay(
                         horizontalArrangement = Arrangement.spacedBy(if (isFullscreen) 8.dp else 6.dp)
                     ) {
                         if (isVrMode) {
-                            // Play/Pause button in VR
-                            PlayerOverlayActionButton(
-                                onClick = onTogglePlayPause,
-                                iconRes = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
-                                contentDescription = if (isPlaying) "Pause" else "Play",
-                                testTag = "vr_play_pause_button",
-                                isFullscreen = isFullscreen,
-                                isActive = isPlaying,
-                                activeColor = accent
-                            )
-
-                            // Stereo Mode Toggle (SBS vs Top-Bottom / Over-Under)
-                            if (onToggleVrStereoMode != null) {
-                                val isTopBottom = (vrStereoMode == androidx.media3.common.C.STEREO_MODE_TOP_BOTTOM)
-                                PlayerOverlayActionButton(
-                                    onClick = onToggleVrStereoMode,
-                                    iconRes = R.drawable.ic_player_vr,
-                                    contentDescription = if (isTopBottom) "VR 3D: Top-Bottom (OU)" else "VR 3D: Side-by-Side (SBS)",
-                                    testTag = "vr_stereo_mode_button",
-                                    isFullscreen = isFullscreen,
-                                    isActive = isTopBottom,
-                                    activeColor = accent
-                                )
-                            }
-
                             // Gyroscope toggle
                             if (onToggleVrGyro != null) {
                                 PlayerOverlayActionButton(
