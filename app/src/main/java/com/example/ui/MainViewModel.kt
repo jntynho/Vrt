@@ -674,6 +674,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun terminateAllVideoPlayback() {
+        _activeVideo.value = null
+        _activeInlineVideo.value = null
+        lastInlineCardId = null
+        enteredPipFromInlineCard = false
+        sharedPlayerManager.stopPlayer()
+    }
+
     var enteredPipFromInlineCard: Boolean = false
         private set
 

@@ -105,6 +105,16 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
         }
     }
 
+    /**
+     * Smoothly recenters the camera directly onto the center of the active half-scene
+     * (Yaw = 0°, Pitch = 0° -> U = 0.25, V = 0.5) and resets the gyroscope baseline
+     * to the phone's current physical orientation without recreating the GL surface.
+     */
+    fun recenter() {
+        hasPrevRotationMatrix = false
+        renderer.recenterToSceneMiddle()
+    }
+
     override fun onResume() {
         super.onResume()
         isStarted = true
@@ -348,6 +358,12 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
         fun addCameraRotationDelta(deltaYawDeg: Float, deltaPitchDeg: Float) {
             targetYawDeg = (targetYawDeg + deltaYawDeg).coerceIn(-maxYawDeg, maxYawDeg)
             targetPitchDeg = (targetPitchDeg + deltaPitchDeg).coerceIn(-maxPitchDeg, maxPitchDeg)
+        }
+
+        @Synchronized
+        fun recenterToSceneMiddle() {
+            targetYawDeg = 0f
+            targetPitchDeg = 0f
         }
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {

@@ -56,6 +56,7 @@ object BtnColors {
 
 val LocalActionsInteractive = compositionLocalOf { true }
 val LocalActionMenuProgress = compositionLocalOf { 1f }
+val LocalActionButtonPressed = compositionLocalOf<(Boolean) -> Unit> { {} }
 
 /**
  * Hardware-accelerated sequential Center Zoom-In with subtle, refined Spring Bounce physics.
@@ -148,8 +149,21 @@ fun ActionCircleButton(
 ) {
     val haptic = LocalHapticFeedback.current
     val interactive = LocalActionsInteractive.current
+    val onButtonPressedChange = LocalActionButtonPressed.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+
+    DisposableEffect(isPressed, enabled, interactive) {
+        val activePress = isPressed && enabled && interactive
+        if (activePress) {
+            onButtonPressedChange(true)
+        }
+        onDispose {
+            if (activePress) {
+                onButtonPressedChange(false)
+            }
+        }
+    }
 
     var lastClickTime by remember { mutableLongStateOf(0L) }
 
@@ -255,7 +269,9 @@ fun MainActionMenu(
     var btnIndex = 0
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -345,7 +361,9 @@ fun QualitySelectMenu(
     var btnIndex = 0
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -392,7 +410,9 @@ fun DeleteConfirmMenu(
     val totalButtons = 2
 
     Column(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(

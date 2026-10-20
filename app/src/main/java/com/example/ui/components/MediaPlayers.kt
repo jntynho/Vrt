@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -87,6 +88,7 @@ fun CoreMediaPlayer(
     exoPlayer: ExoPlayer? = null,
     enableGestures: Boolean = true,
     onClose: () -> Unit,
+    onTerminateAll: (() -> Unit)? = null,
     onFullscreen: ((currentPositionMs: Long) -> Unit)? = null,
     onFullscreenWithMode: ((currentPositionMs: Long, startInLandscape: Boolean) -> Unit)? = null,
     onEnterPip: ((currentPositionMs: Long) -> Unit)? = null,
@@ -285,10 +287,11 @@ fun CoreMediaPlayer(
 
     val handleBackAction = {
         if (isVrMode) {
-            isVrMode = false
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            sphericalViewRef?.onPause()
+            activeExoPlayer.clearVideoSurface()
             activeExoPlayer.pause()
-            onClose()
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            (onTerminateAll ?: onClose)()
         } else if (isFullscreen && isLandscape) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else if (!isInPipMode) {
@@ -462,6 +465,13 @@ fun CoreMediaPlayer(
             }
         )
     } else {
+        val density = LocalDensity.current
+        val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+        val topNotificationSafeZonePx = remember(density, isLandscape, statusBarTopPx) {
+            val minZonePx = with(density) { (if (isLandscape) 44.dp else 52.dp).toPx() }
+            (statusBarTopPx + with(density) { 16.dp.toPx() }).coerceAtLeast(minZonePx)
+        }
+        val currentTopSafeZonePx by rememberUpdatedState(topNotificationSafeZonePx)
         val currentDuration by rememberUpdatedState(duration)
         val currentExoPlayer by rememberUpdatedState(activeExoPlayer)
         val currentSphericalView by rememberUpdatedState(sphericalViewRef)
@@ -471,7 +481,7 @@ fun CoreMediaPlayer(
         Modifier.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                if (down.isConsumed || isScrubbing) return@awaitEachGesture
+                if (down.isConsumed || isScrubbing || down.position.y <= currentTopSafeZonePx) return@awaitEachGesture
                 val startPos = down.position
                 var lastPos = startPos
                 val startTime = System.currentTimeMillis()
@@ -819,10 +829,11 @@ fun CoreMediaPlayer(
             onSubtitleFontFamilyChange = { subtitleFontFamily = it },
             onToggleVrMode = {
                 if (isVrMode) {
-                    isVrMode = false
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    sphericalViewRef?.onPause()
+                    activeExoPlayer.clearVideoSurface()
                     activeExoPlayer.pause()
-                    onClose()
+                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    (onTerminateAll ?: onClose)()
                 } else {
                     isVrMode = true
                     showControls = true
@@ -831,6 +842,9 @@ fun CoreMediaPlayer(
             },
             onToggleVrGyro = {
                 vrUseGyro = !vrUseGyro
+            },
+            onRecenterVr = {
+                sphericalViewRef?.recenter()
             },
             onBack = handleBackAction,
             onRewind10s = {
@@ -927,7 +941,8 @@ fun GoPlayer(
     initialPositionMs: Long = 0L,
     startInLandscape: Boolean = false,
     exoPlayer: ExoPlayer? = null,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onTerminateAll: (() -> Unit)? = null
 ) {
     CoreMediaPlayer(
         mode = PlayerMode.FULLSCREEN,
@@ -938,7 +953,8 @@ fun GoPlayer(
         initialPositionMs = initialPositionMs,
         startInLandscape = startInLandscape,
         exoPlayer = exoPlayer,
-        onClose = onClose
+        onClose = onClose,
+        onTerminateAll = onTerminateAll
     )
 }
 

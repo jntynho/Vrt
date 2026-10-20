@@ -5,6 +5,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -13,8 +14,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -198,6 +202,23 @@ fun LinkCard(
         label = "menu_progress"
     )
 
+    var isAnyActionButtonPressed by remember { mutableStateOf(false) }
+
+    val coverZoomScale by animateFloatAsState(
+        targetValue = when {
+            !isOverlayActive -> 1.0f
+            currentMenuState != CardActionMenuState.MAIN_MENU && isAnyActionButtonPressed -> 1.095f
+            currentMenuState != CardActionMenuState.MAIN_MENU -> 1.075f
+            isAnyActionButtonPressed -> 1.075f
+            else -> 1.05f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "cover_subtle_zoom"
+    )
+
     val isOverlayVisible by remember {
         derivedStateOf { menuProgress > 0.001f }
     }
@@ -206,6 +227,7 @@ fun LinkCard(
         if (!isActiveCard) {
             subMenuState = null
             selectedSource = null
+            isAnyActionButtonPressed = false
             lastOpenMenuState = CardActionMenuState.MAIN_MENU
         }
     }
@@ -380,7 +402,15 @@ fun LinkCard(
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            transformOrigin = TransformOrigin.Center
+                            scaleX = coverZoomScale
+                            scaleY = coverZoomScale
+                        }
+                ) {
                     if (!isImageLoaded && link.coverImage.isNotEmpty() && !isImageError) {
                         val shimmerBrush = ShimmerBrush(targetValue = 900f)
                         Box(
@@ -463,7 +493,8 @@ fun LinkCard(
                 if (isOverlayVisible) {
                     CompositionLocalProvider(
                         LocalActionsInteractive provides isOverlayActive,
-                        LocalActionMenuProgress provides menuProgress
+                        LocalActionMenuProgress provides menuProgress,
+                        LocalActionButtonPressed provides { pressed -> isAnyActionButtonPressed = pressed }
                     ) {
                         Box(
                             modifier = Modifier
@@ -479,6 +510,7 @@ fun LinkCard(
                                         .togetherWith(
                                             fadeOut(tween(durationMillis = 100, easing = FastOutLinearInEasing))
                                         )
+                                        .using(SizeTransform(clip = false))
                                 },
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier.fillMaxWidth(),

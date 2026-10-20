@@ -141,7 +141,8 @@ fun MainAppShell(viewModel: MainViewModel) {
                     initialPositionMs = video.initialPositionMs,
                     startInLandscape = false,
                     exoPlayer = viewModel.sharedPlayerManager.getPlayer(),
-                    onClose = { viewModel.closeVideo() }
+                    onClose = { viewModel.closeVideo() },
+                    onTerminateAll = { viewModel.terminateAllVideoPlayback() }
                 )
             }
         } else {
@@ -455,7 +456,8 @@ fun MainAppShell(viewModel: MainViewModel) {
                                     initialPositionMs = video.initialPositionMs,
                                     startInLandscape = video.startInLandscape,
                                     exoPlayer = viewModel.sharedPlayerManager.getPlayer(),
-                                    onClose = { viewModel.closeVideo() }
+                                    onClose = { viewModel.closeVideo() },
+                                    onTerminateAll = { viewModel.terminateAllVideoPlayback() }
                                 )
                             }
                         }

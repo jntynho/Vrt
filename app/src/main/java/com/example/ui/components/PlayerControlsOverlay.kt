@@ -140,6 +140,7 @@ fun PlayerControlsOverlay(
     onSubtitleFontFamilyChange: ((SubtitleFontFamily) -> Unit)? = null,
     onToggleVrMode: (() -> Unit)? = null,
     onToggleVrGyro: (() -> Unit)? = null,
+    onRecenterVr: (() -> Unit)? = null,
     onBack: () -> Unit,
     onRewind10s: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -413,6 +414,19 @@ fun PlayerControlsOverlay(
                                     testTag = "vr_gyro_toggle_button",
                                     isFullscreen = isFullscreen,
                                     isActive = vrUseGyro,
+                                    activeColor = accent
+                                )
+                            }
+
+                            // Recenter Scene
+                            if (onRecenterVr != null) {
+                                PlayerOverlayActionButton(
+                                    onClick = onRecenterVr,
+                                    iconRes = R.drawable.ic_vr_recenter,
+                                    contentDescription = "Recenter Scene View",
+                                    testTag = "vr_recenter_button",
+                                    isFullscreen = isFullscreen,
+                                    isActive = false,
                                     activeColor = accent
                                 )
                             }
