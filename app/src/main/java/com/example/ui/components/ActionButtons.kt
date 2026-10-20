@@ -1,6 +1,6 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -38,8 +38,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.util.lerp
 import com.example.R
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 object BtnColors {
     val Magnet = Color(0xFF8B5CF6)
@@ -56,51 +57,71 @@ object BtnColors {
 val LocalActionsInteractive = compositionLocalOf { true }
 val LocalActionMenuProgress = compositionLocalOf { 1f }
 
-// Soft Overshoot Spring Pop Easing - starts at 0, rapidly expands past 1.0 (to ~1.18f), then gently settles back to 1.0f
-private val CenterZoomSpringEasing = CubicBezierEasing(0.34f, 1.56f, 0.64f, 1.0f)
-
 /**
- * Hardware-accelerated sequential Center Zoom-In with Soft Bounce Spring physics.
+ * Hardware-accelerated sequential Center Zoom-In with subtle, refined Spring Bounce physics.
  *
  * Entrance:
- * - Sequentially cascades from Left to Right (Index 0 = Leftmost pops first).
- * - Origin is exact Center: expands from 0.0f -> soft overshoot bounce to ~1.18f -> settles smoothly at 1.0f.
- * - Alpha transitions from 0f -> 1f.
+ * - Sequentially cascades from Left to Right (Index 0 = Leftmost zooms in first).
+ * - Each button independently zooms in from 0.0f -> subtle micro-bounce (~1.06f) -> settles smoothly at 1.0f.
+ * - Alpha transitions cleanly from 0f -> 1f.
  *
  * Exit:
- * - Sequentially cascades in reverse from Right to Left (Rightmost shrinks first).
- * - Smoothly shrinks back to center (1.0f -> 0.0f) with fade out.
+ * - Smoothly shrinks back to center (1.0f -> 0.0f) with reverse cascade and fade out.
  */
+@Composable
 fun Modifier.staggeredActionEntrance(
-    progress: Float,
+    @Suppress("UNUSED_PARAMETER") progress: Float,
     indexFromLeft: Int,
     totalItems: Int
-): Modifier = this.graphicsLayer {
-    transformOrigin = TransformOrigin.Center
+): Modifier {
+    val isMenuOpen = LocalActionsInteractive.current
+    val scaleAnim = remember { Animatable(0f) }
+    val alphaAnim = remember { Animatable(0f) }
 
-    val maxDelay = 0.52f
-    val stepDelay = if (totalItems > 1) maxDelay / (totalItems - 1) else 0f
+    LaunchedEffect(isMenuOpen) {
+        if (isMenuOpen) {
+            val staggerDelayMs = (indexFromLeft.coerceAtLeast(0) * 45L).coerceAtMost(240L)
+            if (staggerDelayMs > 0L) {
+                delay(staggerDelayMs)
+            }
+            launch {
+                alphaAnim.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing)
+                )
+            }
+            scaleAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.67f,
+                    stiffness = 480f
+                )
+            )
+        } else {
+            val reverseIndex = (totalItems - 1 - indexFromLeft).coerceAtLeast(0)
+            val exitDelayMs = (reverseIndex * 20L).coerceAtMost(100L)
+            if (exitDelayMs > 0L) {
+                delay(exitDelayMs)
+            }
+            launch {
+                alphaAnim.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 130, easing = FastOutLinearInEasing)
+                )
+            }
+            scaleAnim.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 150, easing = FastOutLinearInEasing)
+            )
+        }
+    }
 
-    // Stagger delay fraction from Left to Right:
-    val delayFraction = (indexFromLeft * stepDelay).coerceIn(0f, maxDelay)
-
-    val itemProgress = if (delayFraction < 1f) {
-        ((progress - delayFraction) / (1f - delayFraction)).coerceIn(0f, 1f)
-    } else progress
-
-    if (itemProgress <= 0.001f) {
-        alpha = 0f
-        scaleX = 0.0f
-        scaleY = 0.0f
-    } else {
-        val eased = CenterZoomSpringEasing.transform(itemProgress)
-        // Alpha becomes visible promptly as zoom starts
-        alpha = (itemProgress * 1.5f).coerceIn(0f, 1f)
-
-        // Expands from 0.0f, pops with bounce overshoot to ~1.18f, settles at 1.0f
-        val zoomScale = (eased * 1.0f).coerceAtLeast(0.0f)
-        scaleX = zoomScale
-        scaleY = zoomScale
+    return this.graphicsLayer {
+        transformOrigin = TransformOrigin.Center
+        val currentScale = scaleAnim.value.coerceAtLeast(0f)
+        scaleX = currentScale
+        scaleY = currentScale
+        alpha = alphaAnim.value.coerceIn(0f, 1f)
     }
 }
 

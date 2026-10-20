@@ -287,6 +287,8 @@ fun CoreMediaPlayer(
         if (isVrMode) {
             isVrMode = false
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activeExoPlayer.pause()
+            onClose()
         } else if (isFullscreen && isLandscape) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else if (!isInPipMode) {
@@ -469,6 +471,7 @@ fun CoreMediaPlayer(
         Modifier.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                if (down.isConsumed || isScrubbing) return@awaitEachGesture
                 val startPos = down.position
                 var lastPos = startPos
                 val startTime = System.currentTimeMillis()
@@ -815,34 +818,19 @@ fun CoreMediaPlayer(
             subtitleFontFamily = subtitleFontFamily,
             onSubtitleFontFamilyChange = { subtitleFontFamily = it },
             onToggleVrMode = {
-                val nextMode = !isVrMode
-                isVrMode = nextMode
-                if (nextMode) {
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                } else {
+                if (isVrMode) {
+                    isVrMode = false
                     activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    activeExoPlayer.pause()
+                    onClose()
+                } else {
+                    isVrMode = true
+                    showControls = true
+                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
             },
             onToggleVrGyro = {
                 vrUseGyro = !vrUseGyro
-            },
-            onRecenterVr = {
-                sphericalViewRef?.recenter()
-            },
-            onToggleVrStereoMode = {
-                val newMode = when (vrStereoMode) {
-                    C.STEREO_MODE_LEFT_RIGHT -> C.STEREO_MODE_TOP_BOTTOM
-                    else -> C.STEREO_MODE_LEFT_RIGHT
-                }
-                vrStereoMode = newMode
-                val modeLabel = if (newMode == C.STEREO_MODE_TOP_BOTTOM) "VR 3D: Top-Bottom (OU)" else "VR 3D: Side-by-Side (SBS)"
-                switchingQualityLabel = modeLabel
-                coroutineScope.launch {
-                    delay(2000)
-                    if (switchingQualityLabel == modeLabel) {
-                        switchingQualityLabel = null
-                    }
-                }
             },
             onBack = handleBackAction,
             onRewind10s = {

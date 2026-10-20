@@ -140,8 +140,6 @@ fun PlayerControlsOverlay(
     onSubtitleFontFamilyChange: ((SubtitleFontFamily) -> Unit)? = null,
     onToggleVrMode: (() -> Unit)? = null,
     onToggleVrGyro: (() -> Unit)? = null,
-    onRecenterVr: (() -> Unit)? = null,
-    onToggleVrStereoMode: (() -> Unit)? = null,
     onBack: () -> Unit,
     onRewind10s: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -299,9 +297,9 @@ fun PlayerControlsOverlay(
                     )
                 }
 
-            // Center 3-Button Controls (10s Rewind, Play/Pause, 10s Forward) - Hidden during Buffering
+            // Center 3-Button Controls (10s Rewind, Play/Pause, 10s Forward)
             AnimatedVisibility(
-                visible = !isBuffering,
+                visible = !isBuffering || isVrMode,
                 enter = fadeIn(tween(200)),
                 exit = fadeOut(tween(150)),
                 modifier = Modifier.align(Alignment.Center)
@@ -419,20 +417,7 @@ fun PlayerControlsOverlay(
                                 )
                             }
 
-                            // Recenter Scene
-                            if (onRecenterVr != null) {
-                                PlayerOverlayActionButton(
-                                    onClick = onRecenterVr,
-                                    iconRes = R.drawable.ic_vr_recenter,
-                                    contentDescription = "Recenter Scene View",
-                                    testTag = "vr_recenter_button",
-                                    isFullscreen = isFullscreen,
-                                    isActive = false,
-                                    activeColor = accent
-                                )
-                            }
-
-                            // Exit VR
+                            // Exit VR (Closes Player Completely)
                             if (onToggleVrMode != null) {
                                 PlayerOverlayActionButton(
                                     onClick = onToggleVrMode,

@@ -475,22 +475,10 @@ fun LinkCard(
                             AnimatedContent(
                                 targetState = if (isOverlayActive) currentMenuState else lastOpenMenuState,
                                 transitionSpec = {
-                                    val isForward = initialState == CardActionMenuState.MAIN_MENU &&
-                                            (targetState == CardActionMenuState.QUALITY_MENU ||
-                                             targetState == CardActionMenuState.DELETE_CONFIRM ||
-                                             targetState == CardActionMenuState.ACTORS_MENU)
-
-                                    if (isForward) {
-                                        (slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 3 } + fadeIn(tween(260)))
-                                            .togetherWith(
-                                                slideOutHorizontally(tween(220, easing = FastOutLinearInEasing)) { -it / 3 } + fadeOut(tween(200))
-                                            )
-                                    } else {
-                                        (slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 3 } + fadeIn(tween(260)))
-                                            .togetherWith(
-                                                slideOutHorizontally(tween(220, easing = FastOutLinearInEasing)) { it / 3 } + fadeOut(tween(200))
-                                            )
-                                    }
+                                    fadeIn(tween(durationMillis = 80, easing = FastOutSlowInEasing))
+                                        .togetherWith(
+                                            fadeOut(tween(durationMillis = 100, easing = FastOutLinearInEasing))
+                                        )
                                 },
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier.fillMaxWidth(),
@@ -593,11 +581,16 @@ fun LinkCard(
                                             horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            preparedActors.forEach { actor ->
+                                            preparedActors.forEachIndexed { actorIdx, actor ->
                                                 Column(
                                                     horizontalAlignment = Alignment.CenterHorizontally,
                                                     verticalArrangement = Arrangement.spacedBy(6.dp),
                                                     modifier = Modifier
+                                                        .staggeredActionEntrance(
+                                                            progress = menuProgress,
+                                                            indexFromLeft = actorIdx,
+                                                            totalItems = preparedActors.size
+                                                        )
                                                         .padding(horizontal = 4.dp)
                                                         .width(72.dp)
                                                         .clickable(enabled = isOverlayActive) {
