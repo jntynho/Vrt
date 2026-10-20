@@ -3,16 +3,40 @@ package com.example.network
 import okhttp3.ConnectionPool
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.Dns
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object NetworkClient {
     private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
     private val sharedConnectionPool = ConnectionPool(24, 10, TimeUnit.MINUTES)
+
+    private val ipv4FirstDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            val (v4, v6) = all.partition { it is Inet4Address }
+            return v4 + v6
+        }
+    }
+
+    fun seedCookie(urlStr: String, name: String, value: String, domain: String) {
+        val httpUrl = urlStr.toHttpUrlOrNull() ?: return
+        val cookie = Cookie.Builder()
+            .name(name)
+            .value(value)
+            .domain(domain.trimStart('.'))
+            .path("/")
+            .expiresAt(System.currentTimeMillis() + TimeUnit.HOURS.toMillis(12))
+            .build()
+        inMemoryCookieJar.saveFromResponse(httpUrl, listOf(cookie))
+    }
 
     private val inMemoryCookieJar = object : CookieJar {
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
@@ -36,6 +60,7 @@ object NetworkClient {
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dns(ipv4FirstDns)
             .connectionPool(sharedConnectionPool)
             .cookieJar(inMemoryCookieJar)
             .connectTimeout(12, TimeUnit.SECONDS)
@@ -81,6 +106,7 @@ object NetworkClient {
      */
     val apiClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .dns(ipv4FirstDns)
             .connectionPool(sharedConnectionPool)
             .cookieJar(inMemoryCookieJar)
             .connectTimeout(10, TimeUnit.SECONDS)

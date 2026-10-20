@@ -117,8 +117,8 @@ object PlayerFactory {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8000)
-            .setReadTimeoutMs(15000)
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(25000)
             .setKeepPostFor302Redirects(true)
 
         val customHeaders = HashMap<String, String>()
@@ -131,12 +131,18 @@ object PlayerFactory {
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
 
-        // For large cloud debrid streams, stream directly via upstream factory to prevent
-        // thrashing the small 64MB LRU disk cache with thousands of SQLite evictions per minute.
-        // Cache is retained for small web video clips.
+        // For large cloud debrid and direct file-hoster streams (Gofile, Bunkr, Filester, Pixeldrain),
+        // stream directly via upstream factory to preserve session cookies/headers across Range requests
+        // and prevent thrashing the 64MB LRU disk cache.
         val isDebridOrDirectCdn = url.contains("real-debrid.com", ignoreCase = true) ||
             url.contains("torbox.app", ignoreCase = true) ||
-            url.contains("delivery-", ignoreCase = true)
+            url.contains("delivery-", ignoreCase = true) ||
+            url.contains("gofile.io", ignoreCase = true) ||
+            url.contains("bunkr", ignoreCase = true) ||
+            url.contains("filester", ignoreCase = true) ||
+            url.contains("pixeldrain.com", ignoreCase = true) ||
+            url.contains("cdn.cr", ignoreCase = true) ||
+            customHeaders.keys.any { it.equals("Cookie", ignoreCase = true) || it.equals("Authorization", ignoreCase = true) }
 
         val dataSourceFactory: DataSource.Factory = if (isDebridOrDirectCdn) {
             upstreamFactory
