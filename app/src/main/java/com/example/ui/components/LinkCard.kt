@@ -89,9 +89,11 @@ import com.example.ui.theme.LocalBetaTestPrivacy
 import com.example.ui.theme.LocalVaultPalette
 import com.example.ui.theme.VaultScrims
 import com.example.ui.theme.privacyImageBlur
+import androidx.compose.runtime.mutableFloatStateOf
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 private enum class CardActionMenuState {
     CLOSED,
@@ -114,18 +116,29 @@ fun formatDisplayDate(timestamp: Long?): String {
     }
 }
 
+private const val DEFAULT_COVER_ASPECT_RATIO = 16f / 9f
+private const val MIN_ADAPTIVE_COVER_ASPECT_RATIO = 0.72f
+private const val MAX_ADAPTIVE_COVER_ASPECT_RATIO = 2.40f
+
+/**
+ * Thread-safe in-memory cache mapping cover image URLs to their resolved aspect ratios (width / height).
+ * Prevents layout jumps or recomposition jitter when scrolling back and forth in LazyColumn.
+ */
+private object CoverAspectRatioCache {
+    private val map = ConcurrentHashMap<String, Float>()
+
+    fun get(url: String): Float? = if (url.isNotBlank()) map[url] else null
+
+    fun put(url: String, ratio: Float) {
+        if (url.isNotBlank() && ratio.isFinite() && ratio > 0f) {
+            map[url] = ratio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+        }
+    }
+}
+
 private data class MainActorInfo(
     val name: String,
     val realId: String
-)
-
-private data class PreparedCardActor(
-    val realId: String,
-    val name: String,
-    val img: String,
-    val zoom: Float,
-    val biasX: Float,
-    val biasY: Float
 )
 
 @Composable
@@ -204,11 +217,15 @@ fun LinkCard(
 
     var isAnyActionButtonPressed by remember { mutableStateOf(false) }
 
+    val isActorsOverlayMode = currentMenuState == CardActionMenuState.ACTORS_MENU
+    val isStandardSubMenu = currentMenuState == CardActionMenuState.QUALITY_MENU ||
+            currentMenuState == CardActionMenuState.DELETE_CONFIRM
+
     val coverZoomScale by animateFloatAsState(
         targetValue = when {
             !isOverlayActive -> 1.0f
-            currentMenuState != CardActionMenuState.MAIN_MENU && isAnyActionButtonPressed -> 1.095f
-            currentMenuState != CardActionMenuState.MAIN_MENU -> 1.075f
+            isStandardSubMenu && isAnyActionButtonPressed -> 1.095f
+            isStandardSubMenu -> 1.075f
             isAnyActionButtonPressed -> 1.075f
             else -> 1.05f
         },
@@ -248,7 +265,7 @@ fun LinkCard(
     fun handleScrimTap() {
         debouncedClick {
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-            if (currentMenuState != CardActionMenuState.MAIN_MENU && currentMenuState != CardActionMenuState.CLOSED) {
+            if (isStandardSubMenu) {
                 subMenuState = CardActionMenuState.MAIN_MENU
             } else {
                 subMenuState = null
@@ -258,7 +275,7 @@ fun LinkCard(
     }
 
     BackHandler(enabled = isOverlayActive) {
-        if (currentMenuState != CardActionMenuState.MAIN_MENU && currentMenuState != CardActionMenuState.CLOSED) {
+        if (isStandardSubMenu) {
             subMenuState = CardActionMenuState.MAIN_MENU
         } else {
             subMenuState = null
@@ -364,19 +381,43 @@ fun LinkCard(
     val hasMagnetVR = !link.magnetVR.isNullOrBlank() || !link.torrentUrlVR.isNullOrBlank()
     val hasAnyMagnet = hasMagnetHD || hasMagnet4K || hasMagnetVR
 
-    var isImageLoaded by remember(link.coverImage) { mutableStateOf(false) }
+    var isImageLoaded by remember(link.coverImage) {
+        mutableStateOf(CoverAspectRatioCache.get(link.coverImage) != null)
+    }
     var isImageError by remember(link.coverImage) { mutableStateOf(false) }
+
+    var coverAspectRatio by remember(link.coverImage) {
+        mutableFloatStateOf(
+            CoverAspectRatioCache.get(link.coverImage) ?: DEFAULT_COVER_ASPECT_RATIO
+        )
+    }
+
+    val isVideoPlaybackMode = inlinePlayback != null || isResolvingThisCard
+    val targetCardAspectRatio = if (isVideoPlaybackMode) {
+        DEFAULT_COVER_ASPECT_RATIO
+    } else {
+        coverAspectRatio
+    }
+
+    val animatedCardAspectRatio by animateFloatAsState(
+        targetValue = targetCardAspectRatio,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "adaptive_card_aspect_ratio"
+    )
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .testTag("scene_card_${link.id}")
     ) {
-        // 1. Edge-to-Edge 16:9 Thumbnail or Inline Video Player
+        // 1. Adaptive Cover Thumbnail or 16:9 Inline Video Player
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .aspectRatio(animatedCardAspectRatio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO))
                 .background(if (isResolvingThisCard) palette.surface else palette.cardBg)
                 .clipToBounds()
                 .clickable(
@@ -431,13 +472,26 @@ fun LinkCard(
                                 .build(),
                             contentDescription = link.title,
                             contentScale = ContentScale.Crop,
-                            onSuccess = {
+                            onSuccess = { successState ->
+                                val drawable = successState.result.drawable
+                                val w = drawable.intrinsicWidth
+                                val h = drawable.intrinsicHeight
+                                if (w > 0 && h > 0) {
+                                    val rawRatio = w.toFloat() / h.toFloat()
+                                    val clampedRatio = rawRatio.coerceIn(
+                                        MIN_ADAPTIVE_COVER_ASPECT_RATIO,
+                                        MAX_ADAPTIVE_COVER_ASPECT_RATIO
+                                    )
+                                    CoverAspectRatioCache.put(link.coverImage, clampedRatio)
+                                    coverAspectRatio = clampedRatio
+                                }
                                 isImageLoaded = true
                                 isImageError = false
                             },
                             onError = {
                                 isImageLoaded = true
                                 isImageError = true
+                                coverAspectRatio = DEFAULT_COVER_ASPECT_RATIO
                                 onImageError?.invoke()
                             },
                             modifier = Modifier
@@ -491,6 +545,7 @@ fun LinkCard(
                 }
 
                 if (isOverlayVisible) {
+                    val activeOrLastMenuState = if (isOverlayActive) currentMenuState else lastOpenMenuState
                     CompositionLocalProvider(
                         LocalActionsInteractive provides isOverlayActive,
                         LocalActionMenuProgress provides menuProgress,
@@ -503,184 +558,118 @@ fun LinkCard(
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            AnimatedContent(
-                                targetState = if (isOverlayActive) currentMenuState else lastOpenMenuState,
-                                transitionSpec = {
-                                    fadeIn(tween(durationMillis = 80, easing = FastOutSlowInEasing))
-                                        .togetherWith(
-                                            fadeOut(tween(durationMillis = 100, easing = FastOutLinearInEasing))
-                                        )
-                                        .using(SizeTransform(clip = false))
-                                },
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.fillMaxWidth(),
-                                label = "simple_action_menu"
-                            ) { state ->
-                                when (state) {
-                                    CardActionMenuState.CLOSED -> {
-                                        Spacer(modifier = Modifier.size(0.dp))
+                            if (activeOrLastMenuState == CardActionMenuState.ACTORS_MENU) {
+                                // Actors buttons overlay separated from standard action menus
+                                ActorsActionMenu(
+                                    actors = preparedActors,
+                                    onActorClick = { actorRealId ->
+                                        subMenuState = null
+                                        onDismissActive()
+                                        onActorClick(actorRealId)
                                     }
-                                    CardActionMenuState.MAIN_MENU -> {
-                                        MainActionMenu(
-                                            onMagnetClick = {
-                                                selectedSource = Source.MAGNET
-                                                subMenuState = CardActionMenuState.QUALITY_MENU
-                                            },
-                                            onUrlClick = {
-                                                selectedSource = Source.URL
-                                                subMenuState = CardActionMenuState.QUALITY_MENU
-                                            },
-                                            onSave = onToggleBookmark,
-                                            isSaved = isBookmarked,
-                                            onEdit = {
-                                                onDismissActive()
-                                                onEdit()
-                                            },
-                                            onDelete = {
-                                                subMenuState = CardActionMenuState.DELETE_CONFIRM
-                                            },
-                                            showMagnet = hasAnyMagnet,
-                                            showUrl = hasAnyUrl
-                                        )
-                                    }
-                                    CardActionMenuState.QUALITY_MENU -> {
-                                        val hasHD = if (selectedSource == Source.MAGNET) {
-                                            !link.magnet.isNullOrBlank() || !link.torrentUrlHD.isNullOrBlank()
-                                        } else {
-                                            !link.urlHD.isNullOrBlank()
+                                )
+                            } else {
+                                AnimatedContent(
+                                    targetState = activeOrLastMenuState,
+                                    transitionSpec = {
+                                        fadeIn(tween(durationMillis = 80, easing = FastOutSlowInEasing))
+                                            .togetherWith(
+                                                fadeOut(tween(durationMillis = 100, easing = FastOutLinearInEasing))
+                                            )
+                                            .using(SizeTransform(clip = false))
+                                    },
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = "simple_action_menu"
+                                ) { state ->
+                                    when (state) {
+                                        CardActionMenuState.CLOSED,
+                                        CardActionMenuState.ACTORS_MENU -> {
+                                            Spacer(modifier = Modifier.size(0.dp))
                                         }
-                                        val has4K = if (selectedSource == Source.MAGNET) {
-                                            !link.magnet4K.isNullOrBlank() || !link.torrentUrl4K.isNullOrBlank()
-                                        } else {
-                                            !link.url4K.isNullOrBlank()
+                                        CardActionMenuState.MAIN_MENU -> {
+                                            MainActionMenu(
+                                                onMagnetClick = {
+                                                    selectedSource = Source.MAGNET
+                                                    subMenuState = CardActionMenuState.QUALITY_MENU
+                                                },
+                                                onUrlClick = {
+                                                    selectedSource = Source.URL
+                                                    subMenuState = CardActionMenuState.QUALITY_MENU
+                                                },
+                                                onSave = onToggleBookmark,
+                                                isSaved = isBookmarked,
+                                                onEdit = {
+                                                    onDismissActive()
+                                                    onEdit()
+                                                },
+                                                onDelete = {
+                                                    subMenuState = CardActionMenuState.DELETE_CONFIRM
+                                                },
+                                                showMagnet = hasAnyMagnet,
+                                                showUrl = hasAnyUrl
+                                            )
                                         }
-                                        val hasVR = if (selectedSource == Source.MAGNET) {
-                                            !link.magnetVR.isNullOrBlank() || !link.torrentUrlVR.isNullOrBlank()
-                                        } else {
-                                            !link.urlVR.isNullOrBlank()
-                                        }
-
-                                        QualitySelectMenu(
-                                            hasHD = hasHD,
-                                            has4K = has4K,
-                                            hasVR = hasVR,
-                                            onSelectHD = {
-                                                onDismissActive()
-                                                if (selectedSource == Source.MAGNET) {
-                                                    val targetUri = link.magnet.takeIf { !it.isNullOrBlank() } ?: link.torrentUrlHD
-                                                    handleMagnet(targetUri)
-                                                } else {
-                                                    handleUrlSelection(link.urlHD)
-                                                }
-                                            },
-                                            onSelect4K = {
-                                                onDismissActive()
-                                                if (selectedSource == Source.MAGNET) {
-                                                    val targetUri = link.magnet4K.takeIf { !it.isNullOrBlank() } ?: link.torrentUrl4K
-                                                    handleMagnet(targetUri)
-                                                } else {
-                                                    handleUrlSelection(link.url4K)
-                                                }
-                                            },
-                                            onSelectVR = {
-                                                onDismissActive()
-                                                if (selectedSource == Source.MAGNET) {
-                                                    val targetUri = link.magnetVR.takeIf { !it.isNullOrBlank() } ?: link.torrentUrlVR
-                                                    handleMagnet(targetUri)
-                                                } else {
-                                                    handleUrlSelection(link.urlVR)
-                                                }
+                                        CardActionMenuState.QUALITY_MENU -> {
+                                            val hasHD = if (selectedSource == Source.MAGNET) {
+                                                !link.magnet.isNullOrBlank() || !link.torrentUrlHD.isNullOrBlank()
+                                            } else {
+                                                !link.urlHD.isNullOrBlank()
                                             }
-                                        )
-                                    }
-                                    CardActionMenuState.DELETE_CONFIRM -> {
-                                        DeleteConfirmMenu(
-                                            onCancel = {
-                                                subMenuState = CardActionMenuState.MAIN_MENU
-                                            },
-                                            onConfirm = {
-                                                onDismissActive()
-                                                onDelete()
+                                            val has4K = if (selectedSource == Source.MAGNET) {
+                                                !link.magnet4K.isNullOrBlank() || !link.torrentUrl4K.isNullOrBlank()
+                                            } else {
+                                                !link.url4K.isNullOrBlank()
                                             }
-                                        )
-                                    }
-                                    CardActionMenuState.ACTORS_MENU -> {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState())
-                                                .padding(horizontal = 8.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            preparedActors.forEachIndexed { actorIdx, actor ->
-                                                Column(
-                                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                                    modifier = Modifier
-                                                        .staggeredActionEntrance(
-                                                            progress = menuProgress,
-                                                            indexFromLeft = actorIdx,
-                                                            totalItems = preparedActors.size
-                                                        )
-                                                        .padding(horizontal = 4.dp)
-                                                        .width(72.dp)
-                                                        .clickable(enabled = isOverlayActive) {
-                                                            debouncedClick {
-                                                                subMenuState = null
-                                                                onDismissActive()
-                                                                onActorClick(actor.realId)
-                                                            }
-                                                        }
-                                                        .padding(vertical = 4.dp)
-                                                ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(54.dp)
-                                                            .clip(CircleShape)
-                                                            .background(palette.surface),
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                                                        if (actor.img.isNotEmpty()) {
-                                                            AsyncImage(
-                                                                model = actor.img,
-                                                                contentDescription = actor.name,
-                                                                contentScale = ContentScale.Crop,
-                                                                alignment = BiasAlignment(actor.biasX, actor.biasY),
-                                                                modifier = Modifier
-                                                                    .fillMaxSize()
-                                                                    .graphicsLayer {
-                                                                        scaleX = actor.zoom
-                                                                        scaleY = actor.zoom
-                                                                    }
-                                                            )
-                                                        } else {
-                                                            Icon(
-                                                                painter = painterResource(id = R.drawable.ic_nav_actor),
-                                                                contentDescription = actor.name,
-                                                                tint = palette.textSecondary.copy(alpha = 0.9f),
-                                                                modifier = Modifier.size(28.dp)
-                                                            )
-                                                        }
+                                            val hasVR = if (selectedSource == Source.MAGNET) {
+                                                !link.magnetVR.isNullOrBlank() || !link.torrentUrlVR.isNullOrBlank()
+                                            } else {
+                                                !link.urlVR.isNullOrBlank()
+                                            }
 
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .fillMaxSize()
-                                                                .border(2.dp, accent.copy(alpha = 0.35f), CircleShape)
-                                                        )
+                                            QualitySelectMenu(
+                                                hasHD = hasHD,
+                                                has4K = has4K,
+                                                hasVR = hasVR,
+                                                onSelectHD = {
+                                                    onDismissActive()
+                                                    if (selectedSource == Source.MAGNET) {
+                                                        val targetUri = link.magnet.takeIf { !it.isNullOrBlank() } ?: link.torrentUrlHD
+                                                        handleMagnet(targetUri)
+                                                    } else {
+                                                        handleUrlSelection(link.urlHD)
                                                     }
-                                                    Text(
-                                                        text = actor.name,
-                                                        color = palette.textPrimary,
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        textAlign = TextAlign.Center,
-                                                        modifier = Modifier.fillMaxWidth()
-                                                    )
+                                                },
+                                                onSelect4K = {
+                                                    onDismissActive()
+                                                    if (selectedSource == Source.MAGNET) {
+                                                        val targetUri = link.magnet4K.takeIf { !it.isNullOrBlank() } ?: link.torrentUrl4K
+                                                        handleMagnet(targetUri)
+                                                    } else {
+                                                        handleUrlSelection(link.url4K)
+                                                    }
+                                                },
+                                                onSelectVR = {
+                                                    onDismissActive()
+                                                    if (selectedSource == Source.MAGNET) {
+                                                        val targetUri = link.magnetVR.takeIf { !it.isNullOrBlank() } ?: link.torrentUrlVR
+                                                        handleMagnet(targetUri)
+                                                    } else {
+                                                        handleUrlSelection(link.urlVR)
+                                                    }
                                                 }
-                                            }
+                                            )
+                                        }
+                                        CardActionMenuState.DELETE_CONFIRM -> {
+                                            DeleteConfirmMenu(
+                                                onCancel = {
+                                                    subMenuState = CardActionMenuState.MAIN_MENU
+                                                },
+                                                onConfirm = {
+                                                    onDismissActive()
+                                                    onDelete()
+                                                }
+                                            )
                                         }
                                     }
                                 }
@@ -839,8 +828,14 @@ fun LinkCard(
                                             .clip(CircleShape)
                                             .clickable {
                                                 debouncedClick {
-                                                    subMenuState = CardActionMenuState.ACTORS_MENU
-                                                    onActivate()
+                                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    if (isOverlayActive && isActorsOverlayMode) {
+                                                        subMenuState = null
+                                                        onDismissActive()
+                                                    } else {
+                                                        subMenuState = CardActionMenuState.ACTORS_MENU
+                                                        onActivate()
+                                                    }
                                                 }
                                             }
                                             .testTag("more_actors_button"),

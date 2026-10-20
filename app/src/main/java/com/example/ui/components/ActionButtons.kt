@@ -11,15 +11,18 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -29,6 +32,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -36,11 +41,27 @@ import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.R
+import com.example.ui.theme.LocalAccentColor
+import com.example.ui.theme.LocalBetaTestPrivacy
+import com.example.ui.theme.LocalVaultPalette
+import com.example.ui.theme.privacyImageBlur
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+data class PreparedCardActor(
+    val realId: String,
+    val name: String,
+    val img: String,
+    val zoom: Float,
+    val biasX: Float,
+    val biasY: Float
+)
 
 object BtnColors {
     val Magnet = Color(0xFF8B5CF6)
@@ -441,6 +462,206 @@ fun DeleteConfirmMenu(
                 icon = painterResource(R.drawable.ic_delete_trash),
                 strongHaptic = true,
                 modifier = Modifier.staggeredActionEntrance(progress, indexFromLeft = 1, totalItems = totalButtons)
+            )
+        }
+    }
+}
+
+@Composable
+fun ActorCircleButton(
+    actor: PreparedCardActor,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val palette = LocalVaultPalette.current
+    val accent = LocalAccentColor.current
+    val haptic = LocalHapticFeedback.current
+    val interactive = LocalActionsInteractive.current
+    val onButtonPressedChange = LocalActionButtonPressed.current
+    val isBetaTest = LocalBetaTestPrivacy.current
+
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    DisposableEffect(isPressed, interactive) {
+        val activePress = isPressed && interactive
+        if (activePress) {
+            onButtonPressedChange(true)
+        }
+        onDispose {
+            if (activePress) {
+                onButtonPressedChange(false)
+            }
+        }
+    }
+
+    var lastClickTime by remember { mutableLongStateOf(0L) }
+
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed && interactive) 0.86f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "actor_press_spring"
+    )
+
+    var isImageLoaded by remember(actor.img) { mutableStateOf(false) }
+    var isImageError by remember(actor.img) { mutableStateOf(false) }
+
+    val imageAlpha by animateFloatAsState(
+        targetValue = if (isImageLoaded && !isImageError) 1f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "actor_image_alpha"
+    )
+    val imageRevealScale by animateFloatAsState(
+        targetValue = if (isImageLoaded && !isImageError) 1f else 0.92f,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "actor_image_scale"
+    )
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = modifier
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+            .width(72.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(58.dp)
+                .graphicsLayer {
+                    scaleX = pressScale
+                    scaleY = pressScale
+                }
+                .clip(CircleShape)
+                .background(palette.surface)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = ripple(bounded = true, color = Color.White),
+                    enabled = interactive,
+                    role = Role.Button
+                ) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastClickTime >= 150L) {
+                        lastClickTime = now
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            if (actor.img.isNotEmpty() && !isImageError) {
+                if (!isImageLoaded) {
+                    val shimmerBrush = ShimmerBrush(targetValue = 900f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(palette.cardBg)
+                            .background(shimmerBrush)
+                    )
+                }
+
+                val imageRequest = remember(actor.img, context) {
+                    ImageRequest.Builder(context)
+                        .data(actor.img)
+                        .size(200, 200)
+                        .crossfade(260)
+                        .build()
+                }
+
+                AsyncImage(
+                    model = imageRequest,
+                    contentDescription = actor.name,
+                    contentScale = ContentScale.Crop,
+                    alignment = BiasAlignment(actor.biasX, actor.biasY),
+                    onSuccess = {
+                        isImageLoaded = true
+                        isImageError = false
+                    },
+                    onError = {
+                        isImageLoaded = true
+                        isImageError = true
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = imageAlpha
+                            val combinedScale = actor.zoom * imageRevealScale
+                            val maxX = size.width * (actor.zoom - 1f) / 2f
+                            val maxY = size.height * (actor.zoom - 1f) / 2f
+                            scaleX = combinedScale
+                            scaleY = combinedScale
+                            translationX = -actor.biasX * maxX
+                            translationY = -actor.biasY * maxY
+                        }
+                        .privacyImageBlur(isBetaTest)
+                )
+
+                if (isBetaTest) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.28f))
+                    )
+                }
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_nav_actor),
+                    contentDescription = actor.name,
+                    tint = palette.textSecondary.copy(alpha = 0.9f),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(2.dp, accent.copy(alpha = 0.45f), CircleShape)
+            )
+        }
+
+        Text(
+            text = actor.name,
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            style = ActionTextShadowSingle,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+fun ActorsActionMenu(
+    actors: List<PreparedCardActor>,
+    onActorClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val progress = LocalActionMenuProgress.current
+    val totalActors = actors.size
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        actors.forEachIndexed { actorIdx, actor ->
+            ActorCircleButton(
+                actor = actor,
+                onClick = { onActorClick(actor.realId) },
+                modifier = Modifier.staggeredActionEntrance(
+                    progress = progress,
+                    indexFromLeft = actorIdx,
+                    totalItems = totalActors
+                )
             )
         }
     }
