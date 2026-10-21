@@ -131,13 +131,12 @@ object PlayerFactory {
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
 
-        // For large cloud debrid and direct file-hoster streams (Gofile, Bunkr, Filester, Pixeldrain),
+        // For large cloud debrid and direct file-hoster streams (Bunkr, Filester, Pixeldrain),
         // stream directly via upstream factory to preserve session cookies/headers across Range requests
         // and prevent thrashing the 64MB LRU disk cache.
         val isDebridOrDirectCdn = url.contains("real-debrid.com", ignoreCase = true) ||
             url.contains("torbox.app", ignoreCase = true) ||
             url.contains("delivery-", ignoreCase = true) ||
-            url.contains("gofile.io", ignoreCase = true) ||
             url.contains("bunkr", ignoreCase = true) ||
             url.contains("filester", ignoreCase = true) ||
             url.contains("pixeldrain.com", ignoreCase = true) ||

@@ -357,6 +357,10 @@ fun LinkCard(
                 trimmed.contains(".mp4", ignoreCase = true) ||
                 trimmed.contains("pornhub.com", ignoreCase = true) ||
                 trimmed.contains("xhamster", ignoreCase = true) ||
+                trimmed.contains("gofile.io", ignoreCase = true) ||
+                trimmed.contains("cyberfile.me", ignoreCase = true) ||
+                trimmed.contains("eporner.com", ignoreCase = true) ||
+                trimmed.contains("porntrex.com", ignoreCase = true) ||
                 trimmed.startsWith("magnet:", ignoreCase = true)
 
         if (isStreamableVideo) {

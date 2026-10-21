@@ -9,7 +9,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
-import java.security.MessageDigest
 import java.util.regex.Pattern
 
 private const val SCRAPER_USER_AGENT =
@@ -408,433 +407,16 @@ object BunkrScraper {
 }
 
 /**
- * 4. Gofile Stream Scraper (gofile.io)
- * Extracts ONLY the playable stream URL(s) and required session auth headers.
- */
-object GofileScraper {
-    private const val TAG = "GofileScraper"
-    private const val GOFILE_LANGUAGE = "en-US"
-
-    private val FALLBACK_GUEST_TOKENS = listOf(
-        "6sX8fan7UHsOPIj9IQhG7V55agPuLBti",
-        "097942702b470c704f85a6f333a27a480d33e8969594b76e179f11358be69f2f"
-    )
-
-    @Volatile
-    private var cachedToken: String? = null
-
-    @Volatile
-    private var cachedTokenExpiry: Long = 0L
-
-    @Volatile
-    private var cachedDynamicSalt: String? = null
-
-    @Volatile
-    private var serverTimeOffsetMs: Long? = null
-
-    private fun sha256Hex(input: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
-    }
-
-    private fun updateServerTimeFromResponse(response: okhttp3.Response) {
-        try {
-            val serverDate = response.headers.getDate("Date")
-            if (serverDate != null) {
-                serverTimeOffsetMs = serverDate.time - System.currentTimeMillis()
-            }
-        } catch (_: Exception) {}
-    }
-
-    private suspend fun getAccurateEpochSeconds(): Long {
-        val offset = serverTimeOffsetMs
-        if (offset != null) {
-            return (System.currentTimeMillis() + offset) / 1000L
-        }
-        for (probeUrl in listOf("https://api.gofile.io/accounts", "https://www.google.com")) {
-            try {
-                val req = Request.Builder()
-                    .url(probeUrl)
-                    .head()
-                    .header("User-Agent", SCRAPER_USER_AGENT)
-                    .build()
-                val res = NetworkClient.apiClient.newCall(req).await()
-                updateServerTimeFromResponse(res)
-                res.close()
-                val updatedOffset = serverTimeOffsetMs
-                if (updatedOffset != null) {
-                    return (System.currentTimeMillis() + updatedOffset) / 1000L
-                }
-            } catch (_: Exception) {}
-        }
-        return System.currentTimeMillis() / 1000L
-    }
-
-    private fun generateWebsiteToken(token: String, salt: String, timeBucket: Long): String {
-        val raw = "$SCRAPER_USER_AGENT::$GOFILE_LANGUAGE::$token::$timeBucket::$salt"
-        return sha256Hex(raw)
-    }
-
-    private suspend fun resolveCandidateSalts(): List<String> {
-        val salts = linkedSetOf("4fd6sg89d7s6", "12af056dacea0b")
-        cachedDynamicSalt?.let { if (it.isNotBlank()) salts.add(it) }
-
-        if (cachedDynamicSalt == null) {
-            for (scriptUrl in listOf("https://gofile.io/js/wt.obf.js", "https://gofile.io/dist/js/config.js")) {
-                try {
-                    val req = Request.Builder()
-                        .url(scriptUrl)
-                        .get()
-                        .header("User-Agent", SCRAPER_USER_AGENT)
-                        .header("Referer", "https://gofile.io/")
-                        .build()
-                    val res = NetworkClient.apiClient.newCall(req).await()
-                    updateServerTimeFromResponse(res)
-                    val body = res.body?.string().orEmpty()
-                    res.close()
-                    if (body.isNotBlank()) {
-                        val m1 = Pattern.compile("::([a-zA-Z0-9]{8,24})\"?").matcher(body)
-                        while (m1.find()) {
-                            val s = m1.group(1).orEmpty()
-                            if (s.isNotBlank() && !s.contains("en-US")) {
-                                cachedDynamicSalt = s
-                                salts.add(s)
-                            }
-                        }
-                        val m2 = Pattern.compile("wt\\s*[:=]\\s*[\"']([^\"']+)[\"']").matcher(body)
-                        if (m2.find()) {
-                            val s = m2.group(1).orEmpty()
-                            if (s.isNotBlank()) {
-                                cachedDynamicSalt = s
-                                salts.add(s)
-                            }
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-        return salts.toList()
-    }
-
-    fun isGofileUrl(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        val trimmed = url.trim().lowercase()
-        return trimmed.contains("gofile.io") || trimmed.contains("/api/gofile")
-    }
-
-    fun extractContentId(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val trimmed = url.trim()
-
-        val matchD = Pattern.compile("gofile\\.io/d/([a-zA-Z0-9_-]+)", Pattern.CASE_INSENSITIVE).matcher(trimmed)
-        if (matchD.find()) return matchD.group(1)
-
-        val matchDirect = Pattern.compile("gofile\\.io/download/web/([a-zA-Z0-9_-]+)", Pattern.CASE_INSENSITIVE).matcher(trimmed)
-        if (matchDirect.find()) return matchDirect.group(1)
-
-        try {
-            val normalized = if (trimmed.startsWith("http", ignoreCase = true)) trimmed else "https://$trimmed"
-            val u = URI(normalized)
-            val parts = (u.path ?: "").split("/").filter { it.isNotBlank() }
-            if (parts.size >= 2 && parts[0].equals("d", ignoreCase = true)) {
-                return parts[1]
-            }
-            if (parts.size == 1 && parts[0].length >= 5) {
-                return parts[0]
-            }
-        } catch (_: Exception) {}
-
-        return null
-    }
-
-    private suspend fun getOrRefreshGuestToken(forceRefresh: Boolean = false): String {
-        val now = System.currentTimeMillis()
-        val existing = cachedToken
-        if (!forceRefresh && !existing.isNullOrBlank() && now < cachedTokenExpiry) {
-            return existing
-        }
-
-        // Strategy 1: POST https://api.gofile.io/accounts with empty body (matches browser fetch)
-        // Strategy 2: GET https://api.gofile.io/accounts
-        val requests = listOf(
-            Request.Builder()
-                .url("https://api.gofile.io/accounts")
-                .post("".toRequestBody(null))
-                .header("User-Agent", SCRAPER_USER_AGENT)
-                .header("Accept", "*/*")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Origin", "https://gofile.io")
-                .header("Referer", "https://gofile.io/")
-                .build(),
-            Request.Builder()
-                .url("https://api.gofile.io/accounts")
-                .get()
-                .header("User-Agent", SCRAPER_USER_AGENT)
-                .header("Accept", "*/*")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Origin", "https://gofile.io")
-                .header("Referer", "https://gofile.io/")
-                .build()
-        )
-
-        for (req in requests) {
-            try {
-                val res = NetworkClient.apiClient.newCall(req).await()
-                updateServerTimeFromResponse(res)
-                val bodyStr = res.body?.string().orEmpty()
-                val isOk = res.isSuccessful
-                res.close()
-
-                if (isOk && bodyStr.isNotBlank()) {
-                    val json = JSONObject(bodyStr)
-                    if (json.optString("status") == "ok") {
-                        val token = json.optJSONObject("data")?.optString("token").orEmpty()
-                        if (token.isNotBlank()) {
-                            cachedToken = token
-                            cachedTokenExpiry = System.currentTimeMillis() + (2 * 60 * 60 * 1000L)
-                            seedGofileCookies(token)
-                            return token
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Gofile account request failed (${req.method}): ${e.message}")
-            }
-        }
-
-        // Strategy 3: If rate-limited (HTTP 429) or transient error, reuse existing or verified guest token pool
-        if (!existing.isNullOrBlank() && !forceRefresh) {
-            seedGofileCookies(existing)
-            return existing
-        }
-        val fallback = FALLBACK_GUEST_TOKENS.firstOrNull { it != existing } ?: FALLBACK_GUEST_TOKENS.first()
-        cachedToken = fallback
-        cachedTokenExpiry = System.currentTimeMillis() + (30 * 60 * 1000L)
-        seedGofileCookies(fallback)
-        return fallback
-    }
-
-    private fun seedGofileCookies(token: String) {
-        NetworkClient.seedCookie("https://gofile.io/", "accountToken", token, "gofile.io")
-        NetworkClient.seedCookie("https://api.gofile.io/", "accountToken", token, "api.gofile.io")
-    }
-
-    private fun buildStreamHeaders(token: String): Map<String, String> = mapOf(
-        "User-Agent" to SCRAPER_USER_AGENT,
-        "Referer" to "https://gofile.io/",
-        "Origin" to "https://gofile.io",
-        "Authorization" to "Bearer $token",
-        "Cookie" to "accountToken=$token"
-    )
-
-    private data class GofileCandidate(
-        val name: String,
-        val size: Long,
-        val mimeType: String,
-        val link: String,
-        val qualityLabel: String?,
-        val isSample: Boolean
-    )
-
-    private fun collectFilesFromData(
-        data: JSONObject,
-        out: MutableList<Triple<String, Long, Pair<String, String>>>
-    ) {
-        if (data.optString("type") == "file") {
-            val link = data.optString("link")
-            if (link.isNotBlank()) {
-                out.add(
-                    Triple(
-                        data.optString("name", "video.mp4"),
-                        data.optLong("size", 0L),
-                        Pair(data.optString("mimetype", "video/mp4"), link)
-                    )
-                )
-            }
-        }
-        val children = data.optJSONObject("children") ?: return
-        val keys = children.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            val child = children.optJSONObject(key) ?: continue
-            val childType = child.optString("type")
-            if (childType == "file") {
-                val link = child.optString("link")
-                if (link.isNotBlank()) {
-                    out.add(
-                        Triple(
-                            child.optString("name", "video.mp4"),
-                            child.optLong("size", 0L),
-                            Pair(child.optString("mimetype", "video/mp4"), link)
-                        )
-                    )
-                }
-            } else if (childType == "folder" && child.optJSONObject("children") != null) {
-                collectFilesFromData(child, out)
-            }
-        }
-    }
-
-    suspend fun extractStreams(url: String): List<StreamQuality> = withContext(Dispatchers.IO) {
-        val rawUrl = url.trim()
-
-        val initialToken = getOrRefreshGuestToken(forceRefresh = false)
-
-        // Direct web download link (store*.gofile.io/download/web/...)
-        if (rawUrl.contains("gofile.io/download/web/", ignoreCase = true)) {
-            seedGofileCookies(initialToken)
-            try {
-                val u = URI(rawUrl)
-                if (!u.host.isNullOrBlank()) {
-                    NetworkClient.seedCookie(rawUrl, "accountToken", initialToken, u.host)
-                }
-            } catch (_: Exception) {}
-            val headers = buildStreamHeaders(initialToken)
-            return@withContext listOf(
-                StreamQuality(
-                    quality = "Direct Stream",
-                    url = rawUrl,
-                    format = detectStreamFormat(rawUrl),
-                    isDefault = true,
-                    headers = headers
-                )
-            )
-        }
-
-        val contentId = extractContentId(rawUrl)
-            ?: throw Exception("Could not extract Gofile content ID")
-
-        val serverEpochSeconds = getAccurateEpochSeconds()
-        val serverTimeBucket = serverEpochSeconds / 14400L
-        val localTimeBucket = (System.currentTimeMillis() / 1000L) / 14400L
-        val timeBuckets = linkedSetOf(serverTimeBucket, serverTimeBucket - 1L, localTimeBucket).toList()
-
-        val salts = resolveCandidateSalts()
-        val candidateTokens = linkedSetOf<String>().apply {
-            add(initialToken)
-            addAll(FALLBACK_GUEST_TOKENS)
-        }.toList()
-
-        var contentData: JSONObject? = null
-        var activeToken: String = initialToken
-
-        outerLoop@ for (token in candidateTokens) {
-            seedGofileCookies(token)
-            for (salt in salts) {
-                for (bucket in timeBuckets) {
-                    val wt = generateWebsiteToken(token, salt, bucket)
-                    val encodedId = URLEncoder.encode(contentId, "UTF-8")
-                    val endpoint = "https://api.gofile.io/contents/$encodedId?wt=$wt&contentFilter=&page=1&pageSize=1000&sortField=name&sortDirection=1"
-                    val req = Request.Builder()
-                        .url(endpoint)
-                        .get()
-                        .header("Authorization", "Bearer $token")
-                        .header("X-Website-Token", wt)
-                        .header("Cookie", "accountToken=$token")
-                        .header("User-Agent", SCRAPER_USER_AGENT)
-                        .header("Accept", "*/*")
-                        .header("Accept-Language", "en-US,en;q=0.9")
-                        .header("Origin", "https://gofile.io")
-                        .header("Referer", "https://gofile.io/")
-                        .build()
-
-                    try {
-                        val res = NetworkClient.apiClient.newCall(req).await()
-                        updateServerTimeFromResponse(res)
-                        val bodyStr = res.body?.string().orEmpty()
-                        res.close()
-                        if (bodyStr.isNotBlank()) {
-                            val json = JSONObject(bodyStr)
-                            val status = json.optString("status")
-                            if (status == "ok" && json.optJSONObject("data") != null) {
-                                contentData = json.optJSONObject("data")
-                                activeToken = token
-                                cachedToken = token
-                                cachedTokenExpiry = System.currentTimeMillis() + (2 * 60 * 60 * 1000L)
-                                break@outerLoop
-                            }
-                            // If server returned error-notFound, no need to retry other salts/tokens
-                            if (status.contains("notFound", ignoreCase = true)) {
-                                throw Exception("Gofile content not found ($contentId)")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        if (e.message?.contains("not found", ignoreCase = true) == true) throw e
-                        Log.d(TAG, "Gofile contents fetch attempt failed: ${e.message}")
-                    }
-                }
-            }
-        }
-
-        val data = contentData
-            ?: throw Exception("Failed to retrieve Gofile stream link")
-
-        val rawCandidates = mutableListOf<Triple<String, Long, Pair<String, String>>>()
-        collectFilesFromData(data, rawCandidates)
-
-        if (rawCandidates.isEmpty()) {
-            throw Exception("No playable files found in Gofile link")
-        }
-
-        val classified = rawCandidates.map { (name, size, mimeAndLink) ->
-            val lower = name.lowercase()
-            val isSample = lower.contains("sample") || lower.contains("trailer") || lower.contains("preview") ||
-                    (size in 1..(40L * 1024 * 1024) && rawCandidates.size > 1)
-            val quality = when {
-                Regex("2160p|4k|uhd|3840x2160", RegexOption.IGNORE_CASE).containsMatchIn(lower) -> "4K"
-                Regex("1080p|fhd|1920x1080", RegexOption.IGNORE_CASE).containsMatchIn(lower) -> "1080p"
-                Regex("720p|1280x720", RegexOption.IGNORE_CASE).containsMatchIn(lower) -> "720p"
-                Regex("480p|540p|sd", RegexOption.IGNORE_CASE).containsMatchIn(lower) -> "480p"
-                else -> null
-            }
-            GofileCandidate(
-                name = name,
-                size = size,
-                mimeType = mimeAndLink.first,
-                link = mimeAndLink.second,
-                qualityLabel = quality,
-                isSample = isSample
-            )
-        }
-
-        val videoFiles = classified.filter {
-            it.mimeType.startsWith("video/") ||
-                    it.name.matches(Regex(".*\\.(mp4|mkv|webm|avi|mov)$", RegexOption.IGNORE_CASE))
-        }.ifEmpty { classified }
-
-        val mainVideos = videoFiles.filter { !it.isSample }.ifEmpty { videoFiles }
-        val streamHeaders = buildStreamHeaders(activeToken)
-
-        val streams = mutableListOf<StreamQuality>()
-        for ((idx, item) in mainVideos.withIndex()) {
-            try {
-                val u = URI(item.link)
-                if (!u.host.isNullOrBlank()) {
-                    NetworkClient.seedCookie(item.link, "accountToken", activeToken, u.host)
-                }
-            } catch (_: Exception) {}
-            val label = item.qualityLabel ?: if (mainVideos.size == 1) "Direct Stream" else "Stream ${idx + 1}"
-            streams.add(
-                StreamQuality(
-                    quality = label,
-                    url = item.link,
-                    format = detectStreamFormat(item.name),
-                    isDefault = idx == 0,
-                    headers = streamHeaders
-                )
-            )
-        }
-
-        streams
-    }
-}
-
-/**
- * Unified Scraper Dispatcher for supported direct video hosters:
+ * Unified Scraper Dispatcher for supported direct video hosters and streaming services:
  * - pixeldrain.com
- * - gofile.io
  * - filester
  * - bunkr
+ * - gofile.io
+ * - cyberfile.me
+ * - eporner.com
+ * - porntrex.com
+ * - xhamster.com
+ * - pornhub.com
  */
 object Scraping {
 
@@ -843,7 +425,12 @@ object Scraping {
         return PixeldrainScraper.isPixeldrainUrl(url) ||
                 FilesterScraper.isFilesterUrl(url) ||
                 BunkrScraper.isBunkrUrl(url) ||
-                GofileScraper.isGofileUrl(url)
+                GofileScraper.isGofileUrl(url) ||
+                CyberFileScraper.isCyberfileUrl(url) ||
+                EpornerScraper.isEpornerUrl(url) ||
+                PorntrexScraper.isPorntrexUrl(url) ||
+                VideoResolvers.isXhamsterUrl(url) ||
+                VideoResolvers.isPornhubUrl(url)
     }
 
     suspend fun extractStreams(url: String): List<StreamQuality> {
@@ -853,7 +440,13 @@ object Scraping {
             FilesterScraper.isFilesterUrl(trimmed) -> FilesterScraper.extractStreams(trimmed)
             BunkrScraper.isBunkrUrl(trimmed) -> BunkrScraper.extractStreams(trimmed)
             GofileScraper.isGofileUrl(trimmed) -> GofileScraper.extractStreams(trimmed)
+            CyberFileScraper.isCyberfileUrl(trimmed) -> CyberFileScraper.extractStreams(trimmed)
+            EpornerScraper.isEpornerUrl(trimmed) -> EpornerScraper.extractStreams(trimmed)
+            PorntrexScraper.isPorntrexUrl(trimmed) -> PorntrexScraper.extractStreams(trimmed)
+            VideoResolvers.isXhamsterUrl(trimmed) -> VideoResolvers.resolveXhamster(trimmed).qualities
+            VideoResolvers.isPornhubUrl(trimmed) -> VideoResolvers.resolvePornhub(trimmed).qualities
             else -> throw Exception("Unsupported scraper URL: $trimmed")
         }
     }
 }
+
