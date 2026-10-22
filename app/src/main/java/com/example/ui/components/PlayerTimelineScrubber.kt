@@ -79,26 +79,35 @@ fun PlayerTimelineScrubber(
                         }
 
                         val pointerId = down.id
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                            change.consume()
-                            if (change.pressed) {
-                                scrubProgress = (change.position.x / scrubberWidthPx).coerceIn(0f, 1f)
-                                if (duration > 0 && duration != C.TIME_UNSET) {
-                                    val liveTarget = (scrubProgress * duration).toLong().coerceIn(0L, duration)
-                                    onSeekLive(liveTarget)
+                        var releasedNormally = false
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                change.consume()
+                                if (change.pressed) {
+                                    scrubProgress = (change.position.x / scrubberWidthPx).coerceIn(0f, 1f)
+                                    if (duration > 0 && duration != C.TIME_UNSET) {
+                                        val liveTarget = (scrubProgress * duration).toLong().coerceIn(0L, duration)
+                                        onSeekLive(liveTarget)
+                                    }
+                                } else {
+                                    releasedNormally = true
+                                    lastSeekReleaseTime = System.currentTimeMillis()
+                                    lastSeekReleaseFraction = scrubProgress
+                                    if (duration > 0 && duration != C.TIME_UNSET) {
+                                        val finalTarget = (scrubProgress * duration).toLong().coerceIn(0L, duration)
+                                        onSeekFinal(finalTarget)
+                                    }
+                                    isScrubbing = false
+                                    onScrubbingChanged(false)
+                                    break
                                 }
-                            } else {
-                                lastSeekReleaseTime = System.currentTimeMillis()
-                                lastSeekReleaseFraction = scrubProgress
-                                if (duration > 0 && duration != C.TIME_UNSET) {
-                                    val finalTarget = (scrubProgress * duration).toLong().coerceIn(0L, duration)
-                                    onSeekFinal(finalTarget)
-                                }
+                            }
+                        } finally {
+                            if (!releasedNormally) {
                                 isScrubbing = false
                                 onScrubbingChanged(false)
-                                break
                             }
                         }
                     }

@@ -93,6 +93,17 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
         }
     }
 
+    /**
+     * Safely detaches only this VR view's Surface from the given ExoPlayer without
+     * clearing a newly attached 2D PlayerView surface during VR -> 2D transitions.
+     */
+    fun clearPlayerSurface(player: androidx.media3.exoplayer.ExoPlayer) {
+        val currentSurface = videoSurface
+        if (currentSurface != null) {
+            player.clearVideoSurface(currentSurface)
+        }
+    }
+
     fun setStereoMode(stereoMode: Int) {
         renderer.setStereoMode(stereoMode)
     }
@@ -285,6 +296,12 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
             if (oldTexture != null && oldTexture !== st) {
                 oldTexture.release()
             }
+            if (!isAttachedToWindow) {
+                videoSurface = null
+                surfaceTexture = null
+                st.release()
+                return@post
+            }
             surfaceTexture = st
             val newSurface = Surface(st)
             videoSurface = newSurface
@@ -370,7 +387,10 @@ class VrSceneSurfaceView(context: Context) : GLSurfaceView(context), SensorEvent
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glDisable(GLES20.GL_DEPTH_TEST)
 
-            // Safely delete any previous GL program and texture on surface recreation
+            // Safely release any previous SurfaceTexture, GL program, and texture on surface recreation
+            glSurfaceTexture?.setOnFrameAvailableListener(null)
+            glSurfaceTexture = null
+
             if (programId != 0) {
                 GLES20.glDeleteProgram(programId)
                 programId = 0

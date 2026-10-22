@@ -326,6 +326,51 @@ fun BindPlayerStateListener(
 }
 
 /**
+ * Tracks active playback session metadata per ExoPlayer instance so Inline <-> Fullscreen
+ * and PiP transitions preserve resolved CDN stream URLs, selected quality, and subtitle state
+ * without re-resolving or re-buffering.
+ */
+class PlayerSessionState {
+    @Volatile var lastRawUrl: String? = null
+    @Volatile var lastResolvedStreamUrl: String? = null
+    @Volatile var lastResolvedHeaders: Map<String, String> = emptyMap()
+    @Volatile var selectedQualityUrl: String? = null
+    @Volatile var hasUserSelectedSubtitle: Boolean = false
+    @Volatile var selectedSubtitleIndex: Int = -1
+    @Volatile var subtitleScale: Float = 1.0f
+    @Volatile var subtitleBottomPadding: Float = 0.08f
+    @Volatile var subtitleColorFraction: Float = 0.0f
+    @Volatile var subtitleBgOpacity: Float = 0.0f
+    @Volatile var subtitleEdgeStyle: SubtitleEdgeStyle = SubtitleEdgeStyle.OUTLINE
+    @Volatile var subtitleFontFamily: SubtitleFontFamily = SubtitleFontFamily.LEXEND
+
+    fun clearMediaSession() {
+        lastRawUrl = null
+        lastResolvedStreamUrl = null
+        lastResolvedHeaders = emptyMap()
+        selectedQualityUrl = null
+        hasUserSelectedSubtitle = false
+        selectedSubtitleIndex = -1
+    }
+}
+
+object PlayerSessionTracker {
+    private val sessions = java.util.WeakHashMap<ExoPlayer, PlayerSessionState>()
+
+    @Synchronized
+    fun getOrCreate(player: ExoPlayer): PlayerSessionState {
+        return sessions.getOrPut(player) { PlayerSessionState() }
+    }
+
+    @Synchronized
+    fun clearSession(player: ExoPlayer?) {
+        if (player != null) {
+            sessions[player]?.clearMediaSession()
+        }
+    }
+}
+
+/**
  * Adaptive player position and buffer poller loop with interactive gesture lock and smooth settling grace period
  */
 @Composable
@@ -338,6 +383,7 @@ fun TrackPlayerPositions(
     primaryQuality: StreamQuality?,
     onTick: (duration: Long, buffered: Long, currentPos: Long) -> Unit
 ) {
+    val currentShowControls by androidx.compose.runtime.rememberUpdatedState(showControls)
     val currentIsScrubbing by androidx.compose.runtime.rememberUpdatedState(isScrubbing)
     val currentIsGestureSeeking by androidx.compose.runtime.rememberUpdatedState(isGestureSeeking)
     val currentLastSeekTime by androidx.compose.runtime.rememberUpdatedState(lastSeekTime)
@@ -357,13 +403,13 @@ fun TrackPlayerPositions(
             } else -1L
 
             currentOnTick(dur, buf, pos)
-            delay(if (currentIsScrubbing || currentIsGestureSeeking) 50L else if (showControls) 250L else 1000L)
+            delay(if (currentIsScrubbing || currentIsGestureSeeking) 50L else if (currentShowControls) 250L else 1000L)
         }
     }
 }
 
 /**
- * Media source preparation with intelligent URL validation and resume position tracking
+ * Media source preparation with intelligent URL validation, retry re-resolution, and resume position tracking
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -374,6 +420,9 @@ fun PreparePlayerMediaSource(
     subtitles: List<com.example.network.SubtitleTrack> = emptyList(),
     activeHeaders: Map<String, String>,
     initialPositionMs: Long,
+    retryTrigger: Int = 0,
+    episodeHint: String? = null,
+    onStreamResolved: ((resolvedUrl: String, resolvedHeaders: Map<String, String>) -> Unit)? = null,
     onBufferingChanged: (Boolean) -> Unit,
     onDurationChanged: (Long) -> Unit,
     onPositionChanged: (Long) -> Unit,
@@ -381,22 +430,39 @@ fun PreparePlayerMediaSource(
     onClearError: () -> Unit
 ) {
     var isFirstLoad by remember { mutableStateOf(true) }
+    var lastHandledRetryTrigger by remember { mutableStateOf(retryTrigger) }
 
-    LaunchedEffect(primaryQuality, player, subtitles) {
+    LaunchedEffect(primaryQuality, player, subtitles, retryTrigger) {
         val quality = primaryQuality ?: return@LaunchedEffect
         val url = quality.url.trim()
+        val isExplicitRetry = retryTrigger != lastHandledRetryTrigger
+        lastHandledRetryTrigger = retryTrigger
 
         if (url.isBlank()) {
             onError("Invalid Stream URL", "The provided media link is empty.")
             return@LaunchedEffect
         }
 
+        val session = PlayerSessionTracker.getOrCreate(player)
         val currentUri = player.currentMediaItem?.localConfiguration?.uri?.toString()
-        if (currentUri == url && player.playbackState != Player.STATE_IDLE) {
+        val isSameStreamAlreadyLoaded = !isExplicitRetry &&
+            player.playbackState != Player.STATE_IDLE &&
+            player.playerError == null &&
+            !currentUri.isNullOrBlank() &&
+            (currentUri == url || (session.lastRawUrl == url && currentUri == session.lastResolvedStreamUrl))
+
+        if (isSameStreamAlreadyLoaded) {
             isFirstLoad = false
             onClearError()
             onBufferingChanged(player.playbackState == Player.STATE_BUFFERING)
-            onDurationChanged(player.duration.coerceAtLeast(0L))
+            val resolvedUrl = session.lastResolvedStreamUrl ?: currentUri ?: url
+            val resolvedHeaders = if (session.lastResolvedHeaders.isNotEmpty()) session.lastResolvedHeaders else activeHeaders
+            onStreamResolved?.invoke(resolvedUrl, resolvedHeaders)
+            val d = player.duration
+            if (d > 0 && d != C.TIME_UNSET) {
+                onDurationChanged(d)
+            }
+            onPositionChanged(player.currentPosition.coerceAtLeast(0L))
             if (!player.isPlaying && player.playbackState == Player.STATE_READY) {
                 player.play()
             }
@@ -408,11 +474,16 @@ fun PreparePlayerMediaSource(
 
         try {
             var resolvedStreamHeaders: Map<String, String> = emptyMap()
-            val streamUrl = if (
-                url.startsWith("magnet:", ignoreCase = true) ||
+            var resolvedFormatHint: String? = quality.format
+            val needsDynamicResolution = url.startsWith("magnet:", ignoreCase = true) ||
                 com.example.network.torrent.MagnetParser.parseHash(url) != null ||
+                com.example.network.VideoResolvers.isHosterUrl(url) ||
+                com.example.network.GofileScraper.isGofileUrl(url) ||
+                com.example.network.CyberFileScraper.isCyberfileUrl(url) ||
+                com.example.network.VideoResolvers.isPornhubUrl(url) ||
                 com.example.network.Scraping.isSupportedUrl(url)
-            ) {
+
+            val streamUrl = if (needsDynamicResolution) {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val db = com.example.data.local.AppDatabase.getInstance(context)
                     val settings = db.settingsDao().getSettingsOnce()
@@ -425,40 +496,52 @@ fun PreparePlayerMediaSource(
                         rawUrl = url,
                         torboxApiKey = settings?.torboxApiKey.orEmpty(),
                         realDebridApiKey = settings?.realDebridApiKey.orEmpty(),
-                        debridOrder = order
+                        debridOrder = order,
+                        episodeHint = episodeHint
                     )
-                    val firstStream = resolved.qualities.firstOrNull()
+                    val firstStream = resolved.qualities.firstOrNull { it.isDefault } ?: resolved.qualities.firstOrNull()
                     resolvedStreamHeaders = resolved.headers + (firstStream?.headers ?: emptyMap())
+                    if (firstStream != null && firstStream.format.isNotBlank()) {
+                        resolvedFormatHint = firstStream.format
+                    }
                     firstStream?.url ?: url
                 }
             } else {
                 url
             }
 
+            val finalHeaders = activeHeaders + resolvedStreamHeaders
             val mediaSource = PlayerFactory.buildMediaSource(
                 context,
                 streamUrl,
-                activeHeaders + resolvedStreamHeaders,
-                formatHint = quality.format,
+                finalHeaders,
+                formatHint = resolvedFormatHint,
                 subtitles = subtitles
             )
             val currentPosMs = player.currentPosition.coerceAtLeast(0L)
             val resumePosition = if (isFirstLoad) {
                 isFirstLoad = false
-                initialPositionMs
+                if (initialPositionMs > 0L) initialPositionMs else currentPosMs
             } else {
                 currentPosMs
             }
 
-            val wasPlaying = player.isPlaying || player.playWhenReady
+            val wasPlaying = player.isPlaying || player.playWhenReady || isExplicitRetry
+            session.lastRawUrl = url
+            session.lastResolvedStreamUrl = streamUrl
+            session.lastResolvedHeaders = finalHeaders
+            onStreamResolved?.invoke(streamUrl, finalHeaders)
             player.setMediaSource(mediaSource, true)
             player.prepare()
-            player.seekTo(resumePosition)
+            if (resumePosition > 0L) {
+                player.seekTo(resumePosition)
+            }
             onPositionChanged(resumePosition)
             if (wasPlaying) {
                 player.play()
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             onError("Playback Setup Failed", e.message ?: "Could not build media source.")
             onBufferingChanged(false)
         }

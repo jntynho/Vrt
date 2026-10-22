@@ -118,7 +118,7 @@ fun formatDisplayDate(timestamp: Long?): String {
 }
 
 private const val DEFAULT_COVER_ASPECT_RATIO = 16f / 9f
-private const val MIN_ADAPTIVE_COVER_ASPECT_RATIO = 0.72f
+private const val MIN_ADAPTIVE_COVER_ASPECT_RATIO = 5f / 4f
 private const val MAX_ADAPTIVE_COVER_ASPECT_RATIO = 2.40f
 
 /**
@@ -137,7 +137,12 @@ private object CoverAspectRatioCache {
 
     fun put(url: String, ratio: Float) {
         if (url.isNotBlank() && ratio.isFinite() && ratio > 0f) {
-            map[url] = ratio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+            val resolvedRatio = if (ratio < MIN_ADAPTIVE_COVER_ASPECT_RATIO) {
+                DEFAULT_COVER_ASPECT_RATIO
+            } else {
+                ratio.coerceAtMost(MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+            }
+            map[url] = resolvedRatio
         }
     }
 }
@@ -420,7 +425,12 @@ fun LinkCard(
     val targetHeightRatio = if (!adaptiveCoverAspectRatio || isVideoPlaybackMode) {
         1f / DEFAULT_COVER_ASPECT_RATIO
     } else {
-        1f / coverAspectRatio.coerceIn(MIN_ADAPTIVE_COVER_ASPECT_RATIO, MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+        val effectiveAspectRatio = if (coverAspectRatio < MIN_ADAPTIVE_COVER_ASPECT_RATIO) {
+            DEFAULT_COVER_ASPECT_RATIO
+        } else {
+            coverAspectRatio.coerceAtMost(MAX_ADAPTIVE_COVER_ASPECT_RATIO)
+        }
+        1f / effectiveAspectRatio
     }
 
     val animatedHeightRatio by animateFloatAsState(
@@ -524,12 +534,15 @@ fun LinkCard(
                             val h = drawable.intrinsicHeight
                             if (w > 0 && h > 0) {
                                 val rawRatio = w.toFloat() / h.toFloat()
-                                val clampedRatio = rawRatio.coerceIn(
-                                    MIN_ADAPTIVE_COVER_ASPECT_RATIO,
-                                    MAX_ADAPTIVE_COVER_ASPECT_RATIO
-                                )
-                                CoverAspectRatioCache.put(link.coverImage, clampedRatio)
-                                coverAspectRatio = clampedRatio
+                                val resolvedRatio = if (rawRatio < MIN_ADAPTIVE_COVER_ASPECT_RATIO) {
+                                    DEFAULT_COVER_ASPECT_RATIO
+                                } else {
+                                    rawRatio.coerceAtMost(
+                                        MAX_ADAPTIVE_COVER_ASPECT_RATIO
+                                    )
+                                }
+                                CoverAspectRatioCache.put(link.coverImage, resolvedRatio)
+                                coverAspectRatio = resolvedRatio
                             }
                             isImageLoaded = true
                             isImageError = false
@@ -741,6 +754,7 @@ fun LinkCard(
                         qualities = inlinePlayback.qualities,
                         subtitles = inlinePlayback.subtitles,
                         defaultHeaders = inlinePlayback.headers,
+                        initialPositionMs = inlinePlayback.initialPositionMs,
                         exoPlayer = exoPlayer,
                         enableGestures = enableVideoPlayerGestures,
                         onClose = onCloseInlineVideo,

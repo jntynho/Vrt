@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -129,43 +130,97 @@ fun StashDbScreen(
             viewModel.clearStashSelection()
         } else if (isSearchExpanded) {
             viewModel.setStashSearchExpanded(false)
-            viewModel.setStashSearchQuery("")
         } else {
-            viewModel.navigateTo(ScreenState.Home)
+            viewModel.navigateBack()
         }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Grid state and smooth scroll-driven visibility for the horizontal results row
+    // Grid state, horizontal row states, and hysteresis scroll-driven visibility
     val gridState = rememberLazyGridState()
+    val actorsRowListState = rememberLazyListState()
+    val studiosRowListState = rememberLazyListState()
     var isHorizontalResultsVisible by remember { mutableStateOf(true) }
+    val density = LocalDensity.current
+    val collapseThresholdPx = remember(density) { with(density) { 56.dp.toPx() } }
+    val expandThresholdPx = remember(density) { with(density) { 44.dp.toPx() } }
 
-    val nestedScrollConnection = remember {
+    val nestedScrollConnection = remember(collapseThresholdPx, expandThresholdPx) {
         object : NestedScrollConnection {
+            private var accumulatedScrollY = 0f
+            private var lastToggleTimeMs = 0L
+
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val delta = available.y
-                if (delta < -12f && isHorizontalResultsVisible) {
+                if (delta == 0f) return Offset.Zero
+
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastToggleTimeMs < 260L) {
+                    accumulatedScrollY = 0f
+                    return Offset.Zero
+                }
+
+                if ((delta > 0f && accumulatedScrollY < 0f) || (delta < 0f && accumulatedScrollY > 0f)) {
+                    accumulatedScrollY = 0f
+                }
+                accumulatedScrollY += delta
+
+                val layoutInfo = gridState.layoutInfo
+                val hasEnoughOffscreenItems = layoutInfo.totalItemsCount > 6 &&
+                    layoutInfo.totalItemsCount > (layoutInfo.visibleItemsInfo.size + 2)
+                val isScrolledPastFirstRow = gridState.firstVisibleItemIndex > 0 ||
+                    gridState.firstVisibleItemScrollOffset > 72
+                val canCollapse = hasEnoughOffscreenItems &&
+                    gridState.canScrollForward &&
+                    isScrolledPastFirstRow
+
+                if (accumulatedScrollY < -collapseThresholdPx && isHorizontalResultsVisible && canCollapse) {
                     isHorizontalResultsVisible = false
-                } else if (delta > 12f && !isHorizontalResultsVisible) {
+                    accumulatedScrollY = 0f
+                    lastToggleTimeMs = now
+                } else if (accumulatedScrollY > expandThresholdPx && !isHorizontalResultsVisible) {
                     isHorizontalResultsVisible = true
+                    accumulatedScrollY = 0f
+                    lastToggleTimeMs = now
                 }
                 return Offset.Zero
             }
         }
     }
 
-    // Dynamic scroll observation: restore visibility whenever list returns to top
+    // Dynamic scroll observation: restore visibility whenever list returns to top or has very few items
     val isAtTop by remember {
         derivedStateOf {
-            gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset <= 4
+            gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset <= 12
         }
     }
 
-    LaunchedEffect(isAtTop) {
-        if (isAtTop) {
+    LaunchedEffect(isAtTop, scenesList.size) {
+        if (isAtTop || scenesList.size <= 4) {
             isHorizontalResultsVisible = true
         }
+    }
+
+    // Reset horizontal scroll position to start only when a new search result set arrives
+    val firstPerformerResultId = performerResults.firstOrNull()?.id
+    LaunchedEffect(firstPerformerResultId, performerResults.size) {
+        if (performerResults.isNotEmpty()) {
+            actorsRowListState.scrollToItem(0)
+        }
+    }
+
+    val firstStudioResultId = studioResults.firstOrNull()?.id
+    LaunchedEffect(firstStudioResultId, studioResults.size) {
+        if (studioResults.isNotEmpty()) {
+            studiosRowListState.scrollToItem(0)
+        }
+    }
+
+    // Track which scene IDs have already played their entrance animation in the current view context
+    // so scrolling up and down never re-triggers staggered alpha/translation pop-in
+    val animatedSceneIds = remember(activeType, selectedPerformer?.id, selectedStudio?.id, currentSort) {
+        mutableSetOf<String>()
     }
 
     // Reset visibility and scroll position to top on selection change, mode change, or sort change
@@ -279,6 +334,7 @@ fun StashDbScreen(
                             keyboardActions = KeyboardActions(
                                 onSearch = {
                                     focusManager.clearFocus()
+                                    viewModel.setStashSearchExpanded(false)
                                     viewModel.performStashSearch(settings.stashDbApiKey, searchQuery)
                                 }
                             ),
@@ -339,7 +395,6 @@ fun StashDbScreen(
                         IconButton(
                             onClick = {
                                 viewModel.setStashSearchExpanded(false)
-                                viewModel.setStashSearchQuery("")
                             },
                             modifier = Modifier.testTag("close_search_button")
                         ) {
@@ -351,12 +406,12 @@ fun StashDbScreen(
                         }
                     } else {
                         IconButton(
-                            onClick = { viewModel.navigateTo(ScreenState.Home) },
+                            onClick = { viewModel.navigateBack() },
                             modifier = Modifier.testTag("back_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back to Home",
+                                contentDescription = "Back",
                                 tint = palette.textPrimary
                             )
                         }
@@ -383,6 +438,7 @@ fun StashDbScreen(
                             IconButton(
                                 onClick = {
                                     focusManager.clearFocus()
+                                    viewModel.setStashSearchExpanded(false)
                                     viewModel.performStashSearch(settings.stashDbApiKey, searchQuery)
                                 },
                                 modifier = Modifier.testTag("stashdb_header_search_submit")
@@ -839,13 +895,14 @@ fun StashDbScreen(
                                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                                     )
                                     LazyRow(
+                                        state = actorsRowListState,
                                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .horizontalFadeEdge(24.dp)
                                     ) {
-                                        itemsIndexed(performerResults, key = { index, performer -> "${type.name}_${performer.id}_$index" }) { _, performer ->
+                                        items(performerResults, key = { performer -> "${type.name}_${performer.id}" }) { performer ->
                                             val isSelected = selectedPerformer?.id == performer.id
                                             val matchingActor = remember(type, allActors, performer.id, performer.name) {
                                                 if (type == StashSearchType.ACTORS) {
@@ -858,7 +915,10 @@ fun StashDbScreen(
                                             HorizontalActorCircleItem(
                                                 performer = performer,
                                                 isSelected = isSelected,
-                                                onClick = { viewModel.selectStashPerformer(performer, settings.stashDbApiKey) },
+                                                onClick = {
+                                                    if (isSearchExpanded) viewModel.setStashSearchExpanded(false)
+                                                    viewModel.selectStashPerformer(performer, settings.stashDbApiKey)
+                                                },
                                                 actorEntity = matchingActor
                                             )
                                         }
@@ -876,18 +936,22 @@ fun StashDbScreen(
                                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                                     )
                                     LazyRow(
+                                        state = studiosRowListState,
                                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .horizontalFadeEdge(24.dp)
                                     ) {
-                                        itemsIndexed(studioResults, key = { index, studio -> "${studio.id}_$index" }) { _, studio ->
+                                        items(studioResults, key = { studio -> studio.id }) { studio ->
                                             val isSelected = selectedStudio?.id == studio.id
                                             HorizontalStudioCircleItem(
                                                 studio = studio,
                                                 isSelected = isSelected,
-                                                onClick = { viewModel.selectStashStudio(studio, settings.stashDbApiKey) }
+                                                onClick = {
+                                                    if (isSearchExpanded) viewModel.setStashSearchExpanded(false)
+                                                    viewModel.selectStashStudio(studio, settings.stashDbApiKey)
+                                                }
                                             )
                                         }
                                     }
@@ -934,7 +998,7 @@ fun StashDbScreen(
                             ) {
                                 itemsIndexed(
                                     items = scenesList,
-                                    key = { index, scene -> "${currentSort.name}_${scene.id}_$index" }
+                                    key = { _, scene -> scene.id }
                                 ) { index, scene ->
                                     val isSelected = selectedSceneIds.contains(scene.id)
                                     val parsedDate = remember(scene.date) {
@@ -947,14 +1011,16 @@ fun StashDbScreen(
 
                                     StashSortAnimatedCardItem(
                                         index = index,
+                                        sceneId = scene.id,
                                         sortKey = currentSort.name,
+                                        animatedSceneIds = animatedSceneIds,
                                         modifier = Modifier.animateItem(
-                                            fadeInSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                                            fadeInSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
                                             placementSpec = spring(
                                                 dampingRatio = Spring.DampingRatioNoBouncy,
                                                 stiffness = Spring.StiffnessMediumLow
                                             ),
-                                            fadeOutSpec = tween(durationMillis = 160, easing = FastOutLinearInEasing)
+                                            fadeOutSpec = tween(durationMillis = 150, easing = FastOutLinearInEasing)
                                         )
                                     ) {
                                         StashGridPhotoCard(
@@ -995,7 +1061,7 @@ fun StashDbScreen(
                                     }
                                 }
                             }
-                        } else if (searchQuery.isNotBlank() && !isSearchingTarget) {
+                        } else if (!isLoadingScenes && !isSearchingTarget && (selectedPerformer != null || selectedStudio != null || searchQuery.isNotBlank())) {
                             EmptyStateView(
                                 icon = Icons.Default.SearchOff,
                                 title = "No Scenes Available",
@@ -1086,24 +1152,29 @@ fun StashDbScreen(
 @Composable
 private fun StashSortAnimatedCardItem(
     index: Int,
+    sceneId: String,
     sortKey: String,
+    animatedSceneIds: MutableSet<String>,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
     val density = LocalDensity.current
     val initialOffsetY = remember(density) { with(density) { 14.dp.toPx() } }
-    val progress = remember(sortKey) { Animatable(0f) }
+    val alreadyAnimated = remember(sceneId, sortKey) { !animatedSceneIds.add(sceneId) }
+    val progress = remember(sceneId, sortKey) { Animatable(if (alreadyAnimated) 1f else 0f) }
 
-    LaunchedEffect(sortKey) {
-        val staggerDelay = (index.coerceAtMost(7)) * 20
-        progress.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(
-                durationMillis = 260,
-                delayMillis = staggerDelay,
-                easing = FastOutSlowInEasing
+    LaunchedEffect(sceneId, sortKey) {
+        if (!alreadyAnimated && progress.value < 1f) {
+            val staggerDelay = (index.coerceAtMost(7)) * 18
+            progress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 220,
+                    delayMillis = staggerDelay,
+                    easing = FastOutSlowInEasing
+                )
             )
-        )
+        }
     }
 
     Box(

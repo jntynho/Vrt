@@ -26,11 +26,13 @@ class SharedPlayerManager(private val context: Context) {
     }
 
     fun stopPlayer() {
+        com.example.ui.components.PlayerSessionTracker.clearSession(_exoPlayer)
         _exoPlayer?.stop()
         _exoPlayer?.clearMediaItems()
     }
 
     fun release() {
+        com.example.ui.components.PlayerSessionTracker.clearSession(_exoPlayer)
         _exoPlayer?.release()
         _exoPlayer = null
     }

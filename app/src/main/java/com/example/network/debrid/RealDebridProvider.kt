@@ -19,54 +19,52 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
 
     companion object {
         private val cacheCheckResults = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, CacheState>>()
+        private const val CACHE_STATE_TTL_MS = 5 * 60 * 1000L // 5 minutes verified cache state
+
+        fun clearCache() {
+            cacheCheckResults.clear()
+        }
+
+        fun invalidateHash(hash: String?) {
+            if (!hash.isNullOrBlank()) {
+                cacheCheckResults.remove(hash.lowercase().trim())
+            }
+        }
     }
 
     override fun isConfigured(): Boolean = apiKeyProvider().trim().isNotEmpty()
 
-    override suspend fun checkCache(hash: String): CacheState = withContext(Dispatchers.IO) {
+    override suspend fun checkCache(hash: String): CacheState {
         val key = apiKeyProvider().trim()
-        if (key.isEmpty()) return@withContext CacheState.UNKNOWN
+        if (key.isEmpty()) return CacheState.UNKNOWN
 
-        val infoHash = MagnetParser.parseHash(hash)?.lowercase() ?: return@withContext CacheState.UNKNOWN
+        val infoHash = MagnetParser.parseHash(hash)?.lowercase() ?: return CacheState.UNKNOWN
 
-        // In-memory 30s cache to avoid duplicate network latency
+        // Real-Debrid officially disabled /torrents/instantAvailability (HTTP 403 disabled_endpoint).
+        // Serve verified cache states from in-memory map in 0ms without wasting a network round-trip.
         val cached = cacheCheckResults[infoHash]
-        if (cached != null && System.currentTimeMillis() - cached.first < 30_000L) {
-            return@withContext cached.second
+        if (cached != null && System.currentTimeMillis() - cached.first < CACHE_STATE_TTL_MS) {
+            return cached.second
         }
-
-        try {
-            val url = "$baseUrl/torrents/instantAvailability/$infoHash"
-            val request = Request.Builder()
-                .url(url)
-                .header("Authorization", "Bearer $key")
-                .build()
-
-            val response = NetworkClient.apiClient.newCall(request).await()
-            val body = response.body?.string().orEmpty()
-            val code = response.code
-            response.close()
-
-            if (code in 200..299 && body.isNotEmpty()) {
-                val json = JSONObject(body)
-                val hashJson = json.optJSONObject(infoHash) ?: json.optJSONObject(infoHash.uppercase())
-                if (hashJson != null) {
-                    val rdArr = hashJson.optJSONArray("rd")
-                    if (rdArr != null && rdArr.length() > 0) {
-                        cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.CACHED)
-                        return@withContext CacheState.CACHED
-                    }
-                }
-                cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
-                return@withContext CacheState.NOT_CACHED
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "Real-Debrid checkCache failed: ${e.message}")
-        }
-        CacheState.UNKNOWN
+        return CacheState.UNKNOWN
     }
 
-    override suspend fun resolveStream(magnetOrQuery: String): DebridResult = withContext(Dispatchers.IO) {
+    private fun classifyRdError(statusCode: Int, errorCode: Int, errorMsg: String): DebridErrorType {
+        val lower = errorMsg.lowercase()
+        return when {
+            statusCode in listOf(401, 403) && (errorCode == 8 || lower.contains("bad_token")) -> DebridErrorType.InvalidKey
+            errorCode in listOf(9, 20) || lower.contains("permission_denied") || lower.contains("not_premium") || lower.contains("premium_needed") -> DebridErrorType.NotPremium
+            errorCode in listOf(21, 26, 29, 36) || lower.contains("active_downloads") || lower.contains("fair_usage") || lower.contains("traffic_exhausted") || lower.contains("ip_not_allowed") -> DebridErrorType.AccountLimit
+            statusCode == 429 || errorCode == 34 || lower.contains("too_many_requests") -> DebridErrorType.RateLimited
+            errorCode == 35 || lower.contains("infringing") -> DebridErrorType.Infringing
+            errorCode == 24 || lower.contains("file_unavailable") || lower.contains("file_not_found") -> DebridErrorType.FileNotFound
+            lower.contains("link_not_supported") || lower.contains("hoster_unsupported") || lower.contains("hoster_not_supported") -> DebridErrorType.Unsupported
+            statusCode in listOf(401, 403) -> DebridErrorType.InvalidKey
+            else -> DebridErrorType.Unknown
+        }
+    }
+
+    override suspend fun resolveStream(magnetOrQuery: String, episodeHint: String?): DebridResult = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isEmpty()) {
             return@withContext DebridResult.Error(
@@ -77,7 +75,7 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
         }
 
         val trimmed = magnetOrQuery.trim()
-        val infoHash = MagnetParser.parseHash(trimmed)
+        val infoHash = MagnetParser.parseHash(trimmed)?.lowercase()
         val isMagnetOrHash = infoHash != null
 
         if (!isMagnetOrHash) {
@@ -96,16 +94,15 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
         try {
             Log.d(tag, "[REAL-DEBRID] Resolving infoHash: ${MagnetParser.redact(infoHash)}")
 
-            // Pre-check if torrent is already downloaded or present in account
-            val existingId = findExistingTorrentId(infoHash, key)
+            // Pre-check if torrent is already downloaded or waiting selection in account (purging stale/dead entries)
+            val existingId = findExistingTorrentId(infoHash!!, key)
             if (!existingId.isNullOrEmpty()) {
                 addedTorrentId = existingId
                 isExisting = true
-                Log.d(tag, "[REAL-DEBRID] Found existing torrent in account: $existingId")
+                Log.d(tag, "[REAL-DEBRID] Found existing ready torrent in account: $existingId")
             }
 
-            if (addedTorrentId.isNullOrEmpty()) {
-                // Step 1: Add magnet directly to Real-Debrid
+            suspend fun addFreshMagnet(): DebridResult.Error? {
                 val addBody = FormBody.Builder().add("magnet", canonicalMagnet).build()
                 val addReq = Request.Builder()
                     .url("$baseUrl/torrents/addMagnet")
@@ -118,57 +115,53 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 val addCode = addResp.code
                 addResp.close()
 
-                if (addCode in listOf(401, 403)) {
-                    return@withContext DebridResult.Error(
-                        type = DebridErrorType.InvalidKey,
-                        message = "Real-Debrid API key is invalid or unauthorized.",
-                        statusCode = addCode,
-                        providerName = name
-                    )
-                }
-
                 val addJson = try { JSONObject(addStr) } catch (_: Exception) { JSONObject() }
                 val errorMsg = addJson.optString("error", "")
-                if (errorMsg.contains("bad_token", ignoreCase = true)) {
-                    return@withContext DebridResult.Error(
-                        type = DebridErrorType.InvalidKey,
-                        message = "Invalid Real-Debrid API token.",
-                        statusCode = addCode,
-                        providerName = name
-                    )
-                } else if (errorMsg.contains("infringing", ignoreCase = true)) {
-                    return@withContext DebridResult.Error(
-                        type = DebridErrorType.Infringing,
-                        message = "This torrent is flagged as copyright infringing on Real-Debrid.",
-                        statusCode = addCode,
-                        providerName = name
-                    )
-                }
+                val errorCode = addJson.optInt("error_code", -1)
 
-                addedTorrentId = addJson.optString("id", "")
-                if (addedTorrentId.isEmpty()) {
-                    val fallbackId = findExistingTorrentId(infoHash, key)
-                    if (!fallbackId.isNullOrEmpty()) {
-                        addedTorrentId = fallbackId
-                        isExisting = true
-                    } else {
-                        return@withContext DebridResult.Error(
-                            type = DebridErrorType.Unknown,
-                            message = "Real-Debrid failed to add torrent: $addStr",
+                if (addCode !in 200..299 || errorMsg.isNotEmpty()) {
+                    val errType = classifyRdError(addCode, errorCode, errorMsg.ifEmpty { addStr })
+                    if (errType != DebridErrorType.Unknown || addCode in listOf(401, 403, 429, 451)) {
+                        return DebridResult.Error(
+                            type = errType,
+                            message = "Real-Debrid error: ${errorMsg.ifEmpty { "HTTP $addCode" }}",
                             statusCode = addCode,
                             providerName = name
                         )
                     }
                 }
+
+                addedTorrentId = addJson.optString("id", "")
+                isExisting = false
+                if (addedTorrentId.isNullOrEmpty()) {
+                    val fallbackId = findExistingTorrentId(infoHash, key)
+                    if (!fallbackId.isNullOrEmpty()) {
+                        addedTorrentId = fallbackId
+                        isExisting = true
+                    } else {
+                        return DebridResult.Error(
+                            type = classifyRdError(addCode, errorCode, errorMsg),
+                            message = "Real-Debrid failed to add torrent: ${errorMsg.ifEmpty { addStr }}",
+                            statusCode = addCode,
+                            providerName = name
+                        )
+                    }
+                }
+                return null
             }
 
-            // Step 2: Micro-delay adaptive polling loop for instant cached resolution
+            if (addedTorrentId.isNullOrEmpty()) {
+                val addErr = addFreshMagnet()
+                if (addErr != null) return@withContext addErr
+            }
+
+            // Step 2: Adaptive Stepped Polling Loop (spin-safe & rate-limit aware)
             val startTime = System.currentTimeMillis()
-            val totalTimeoutMs = 25_000L
-            var pollDelayMs = 50L
+            val totalTimeoutMs = 20_000L
+            var pollDelayMs = 80L
             var selectedFileId: String? = null
             var filesSelected = false
-            var selectedFileIndexInList = 0
+            var reAddedForSingleFile = false
             var rawLink: String? = null
             var targetFilename: String? = null
             var targetFilesize: Long? = null
@@ -184,15 +177,25 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 val infoCode = infoResp.code
                 infoResp.close()
 
-                if (infoCode != 200 || infoStr.isEmpty()) continue
+                if (infoCode == 429) {
+                    delay(1000L)
+                    continue
+                }
+                if (infoCode != 200 || infoStr.isEmpty()) {
+                    delay(pollDelayMs)
+                    pollDelayMs = (pollDelayMs + 100L).coerceAtMost(500L)
+                    continue
+                }
 
                 val infoJson = JSONObject(infoStr)
                 val status = infoJson.optString("status")
 
                 // Handle RD Error Statuses
                 if (status in listOf("magnet_error", "error", "virus", "dead")) {
+                    cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                    deleteTorrent(addedTorrentId, key)
                     return@withContext DebridResult.Error(
-                        type = DebridErrorType.Unknown,
+                        type = DebridErrorType.NotCached,
                         message = "Real-Debrid torrent status error: $status",
                         statusCode = infoCode,
                         providerName = name
@@ -203,7 +206,6 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 if (!filesSelected && status.equals("waiting_files_selection", ignoreCase = true)) {
                     val filesArr = infoJson.optJSONArray("files")
                     val fileList = mutableListOf<DebridFileInfo>()
-                    var bestFile: DebridFileInfo? = null
 
                     if (filesArr != null) {
                         for (i in 0 until filesArr.length()) {
@@ -215,7 +217,7 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                         }
                     }
 
-                    bestFile = VideoFilePicker.pickBestVideoFile(fileList)
+                    val bestFile = VideoFilePicker.pickBestVideoFile(fileList, episodeHint)
                     val selectParam = bestFile?.id ?: "all"
                     selectedFileId = bestFile?.id
                     targetFilename = bestFile?.name
@@ -241,6 +243,7 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                         )
                     }
                     filesSelected = true
+                    delay(80L)
                     continue
                 }
 
@@ -249,11 +252,10 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                     val linksArr = infoJson.optJSONArray("links")
                     if (linksArr != null && linksArr.length() > 0) {
                         val filesArr = infoJson.optJSONArray("files")
-                        var targetLinkIndex = 0
-
-                        // Build a map of all selected files and their 1-to-1 corresponding link index in linksArr
+                        val allFiles = mutableListOf<DebridFileInfo>()
                         val selectedFileList = mutableListOf<Pair<Int, DebridFileInfo>>()
                         var selCount = 0
+
                         if (filesArr != null) {
                             for (i in 0 until filesArr.length()) {
                                 val fObj = filesArr.optJSONObject(i) ?: continue
@@ -261,21 +263,42 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                                 val fPath = fObj.optString("path", "")
                                 val fBytes = fObj.optLong("bytes", 0L)
                                 val isSelected = fObj.optInt("selected", 0) == 1
+                                val info = DebridFileInfo(fId, fPath, fBytes)
+                                allFiles.add(info)
                                 if (isSelected) {
-                                    selectedFileList.add(selCount to DebridFileInfo(fId, fPath, fBytes))
+                                    selectedFileList.add(selCount to info)
                                     selCount++
                                 }
                             }
                         }
 
-                        // Always pick the best main video file among the selected files to avoid playing 20-30s sample/trailer clips
+                        // If this was an existing multi-file torrent where either:
+                        // 1) RD bundled multiple selected files into a single archive link (linksArr.length == 1 && selectedFileList.size > 1), OR
+                        // 2) The best target file (e.g. matching episodeHint) was NOT selected in the existing torrent,
+                        // re-add the magnet once and select ONLY the target video file so RD gives a direct stream link!
+                        val idealOverallFile = VideoFilePicker.pickBestVideoFile(allFiles, episodeHint)
+                        val isTargetSelected = idealOverallFile == null || selectedFileList.any { it.second.id == idealOverallFile.id }
+                        val isBundledArchiveMismatch = selectedFileList.size > 1 && linksArr.length() != selectedFileList.size
+
+                        if (isExisting && !reAddedForSingleFile && (!isTargetSelected || isBundledArchiveMismatch)) {
+                            Log.d(tag, "[REAL-DEBRID] Re-adding multi-file torrent to isolate target video file: ${idealOverallFile?.name}")
+                            reAddedForSingleFile = true
+                            filesSelected = false
+                            val addErr = addFreshMagnet()
+                            if (addErr == null && !addedTorrentId.isNullOrEmpty()) {
+                                delay(60L)
+                                continue
+                            }
+                        }
+
+                        var targetLinkIndex = 0
                         val bestFile = if (selectedFileList.isNotEmpty()) {
                             val explicitMatch = if (selectedFileId != null) selectedFileList.find { it.second.id == selectedFileId } else null
-                            if (explicitMatch != null && (explicitMatch.second.sizeBytes > 80 * 1024 * 1024L || selectedFileList.size == 1)) {
+                            if (explicitMatch != null && (explicitMatch.second.sizeBytes > 50 * 1024 * 1024L || selectedFileList.size == 1)) {
                                 targetLinkIndex = explicitMatch.first
                                 explicitMatch.second
                             } else {
-                                val candidate = VideoFilePicker.pickBestVideoFile(selectedFileList.map { it.second })
+                                val candidate = VideoFilePicker.pickBestVideoFile(selectedFileList.map { it.second }, episodeHint)
                                 val match = selectedFileList.find { it.second.id == candidate?.id }
                                 targetLinkIndex = match?.first ?: 0
                                 candidate ?: selectedFileList.first().second
@@ -289,17 +312,23 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                             targetFilename = infoJson.optString("filename", "RealDebrid_Stream")
                         }
 
-                        rawLink = linksArr.optString(targetLinkIndex.coerceAtMost(linksArr.length() - 1))
+                        rawLink = if (linksArr.length() == 1) {
+                            linksArr.optString(0)
+                        } else {
+                            linksArr.optString(targetLinkIndex.coerceIn(0, linksArr.length() - 1))
+                        }
+                        cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.CACHED)
                         break
                     }
                 }
 
-                // Handling Uncached Downloads: Fast fail if Real-Debrid is waiting to download
+                // Handling Uncached Downloads: Fast fail in 1.5s if Real-Debrid enters downloading/queued at <100%
                 if (status in listOf("downloading", "queued", "compressing", "uploading")) {
+                    val progress = infoJson.optDouble("progress", 0.0)
                     val elapsedTime = System.currentTimeMillis() - startTime
-                    if (elapsedTime > 3500L) {
-                        // Cleanup torrent only if we added it in this session
-                        if (!isExisting) {
+                    if (progress < 100.0 && elapsedTime > 1500L) {
+                        cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                        withContext(NonCancellable) {
                             deleteTorrent(addedTorrentId, key)
                         }
                         return@withContext DebridResult.Error(
@@ -310,11 +339,12 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                     }
                 }
 
-                // Handling Magnet Conversion: Fast fail if Real-Debrid cannot find peers or metadata
+                // Handling Magnet Conversion: Allow up to 6.0s for RD metadata cluster lookup
                 if (status.equals("magnet_conversion", ignoreCase = true)) {
                     val elapsedTime = System.currentTimeMillis() - startTime
-                    if (elapsedTime > 4500L) {
-                        if (!isExisting) {
+                    if (elapsedTime > 6000L) {
+                        cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                        withContext(NonCancellable) {
                             deleteTorrent(addedTorrentId, key)
                         }
                         return@withContext DebridResult.Error(
@@ -326,12 +356,20 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 }
 
                 delay(pollDelayMs)
-                pollDelayMs = if (pollDelayMs < 100L) 100L else if (pollDelayMs < 200L) 200L else (pollDelayMs + 150L).coerceAtMost(500L)
+                pollDelayMs = when {
+                    pollDelayMs < 120L -> 120L
+                    pollDelayMs < 180L -> 180L
+                    pollDelayMs < 250L -> 250L
+                    else -> 350L
+                }
             }
 
             if (rawLink.isNullOrEmpty()) {
-                if (!isExisting) {
-                    deleteTorrent(addedTorrentId, key)
+                cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                withContext(NonCancellable) {
+                    if (!isExisting) {
+                        deleteTorrent(addedTorrentId, key)
+                    }
                 }
                 return@withContext DebridResult.Error(
                     type = DebridErrorType.NotCached,
@@ -344,7 +382,6 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
 
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) {
-                // Non-cancellable cleanup on coroutine cancellation
                 withContext(NonCancellable) {
                     if (!isExisting) {
                         deleteTorrent(addedTorrentId, key)
@@ -378,9 +415,13 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                     val item = arr.optJSONObject(i) ?: continue
                     val hash = item.optString("hash", "").lowercase()
                     if (hash == infoHash.lowercase()) {
+                        val id = item.optString("id", "")
                         val status = item.optString("status", "")
-                        if (status in listOf("downloaded", "waiting_files_selection", "downloading", "queued")) {
-                            return item.optString("id", "")
+                        if (status in listOf("downloaded", "waiting_files_selection")) {
+                            return id
+                        } else if (status in listOf("downloading", "queued", "error", "magnet_error", "virus", "dead")) {
+                            // Purge stalled/uncached/dead entry so a fresh magnet check can succeed
+                            deleteTorrent(id, key)
                         }
                     }
                 }
@@ -401,7 +442,7 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 .build()
             val resp = NetworkClient.apiClient.newCall(req).await()
             resp.close()
-            Log.d(tag, "[REAL-DEBRID] Deleted uncached torrent ID: $torrentId")
+            Log.d(tag, "[REAL-DEBRID] Deleted uncached/stale torrent ID: $torrentId")
         } catch (_: Exception) {}
     }
 
@@ -426,13 +467,9 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
 
         if (code !in 200..299) {
             val errJson = try { JSONObject(bodyStr) } catch (_: Exception) { JSONObject() }
-            val errMsg = errJson.optString("message", errJson.optString("error", bodyStr))
-            val errType = when {
-                code in listOf(401, 403) || errMsg.contains("bad_token", ignoreCase = true) -> DebridErrorType.InvalidKey
-                errMsg.contains("file_unavailable", ignoreCase = true) || errMsg.contains("file_not_found", ignoreCase = true) -> DebridErrorType.FileNotFound
-                errMsg.contains("link_not_supported", ignoreCase = true) -> DebridErrorType.Unsupported
-                else -> DebridErrorType.Unknown
-            }
+            val errMsg = errJson.optString("error", errJson.optString("message", bodyStr))
+            val errCode = errJson.optInt("error_code", -1)
+            val errType = classifyRdError(code, errCode, errMsg)
             return DebridResult.Error(
                 type = errType,
                 message = "Real-Debrid unrestrict failed: $errMsg",
@@ -442,9 +479,22 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
         }
 
         val json = try { JSONObject(bodyStr) } catch (_: Exception) { JSONObject() }
-        val downloadUrl = json.optString("download", "")
+        val downloadUrl = json.optString("download", "").trim()
         val filename = json.optString("filename", initialFilename ?: "RealDebrid_Stream")
         val filesize = json.optLong("filesize", sizeBytesHint ?: 0L)
+
+        // Guard against compressed multi-file archives (.rar, .zip, .7z) that ExoPlayer cannot decode
+        val lowerName = filename.lowercase()
+        val lowerUrl = downloadUrl.substringBefore("?").lowercase()
+        if (lowerName.endsWith(".rar") || lowerName.endsWith(".zip") || lowerName.endsWith(".7z") ||
+            lowerUrl.endsWith(".rar") || lowerUrl.endsWith(".zip") || lowerUrl.endsWith(".7z")
+        ) {
+            return DebridResult.Error(
+                type = DebridErrorType.Unsupported,
+                message = "Real-Debrid packaged this multi-file torrent as a compressed archive ($filename) which cannot be streamed directly.",
+                providerName = name
+            )
+        }
 
         if (downloadUrl.startsWith("http://") || downloadUrl.startsWith("https://")) {
             return DebridResult.Success(
@@ -452,7 +502,7 @@ class RealDebridProvider(private val apiKeyProvider: () -> String) : DebridProvi
                 filename = filename,
                 sizeBytes = if (filesize > 0) filesize else null,
                 headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+                    "User-Agent" to NetworkClient.DEFAULT_BROWSER_UA
                 ),
                 providerName = name
             )

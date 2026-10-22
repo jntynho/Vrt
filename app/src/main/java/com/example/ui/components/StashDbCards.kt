@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.R
 import com.example.network.StashScene
 import com.example.ui.theme.LocalAccentColor
@@ -46,9 +47,15 @@ import com.example.ui.theme.privacyImageBlur
  */
 @Composable
 fun Modifier.adaptiveSkeleton(
-    shape: Shape = RoundedCornerShape(8.dp)
+    shape: Shape = RoundedCornerShape(8.dp),
+    enabled: Boolean = true
 ): Modifier {
     val palette = LocalVaultPalette.current
+    if (!enabled) {
+        return this
+            .clip(shape)
+            .background(palette.cardBg)
+    }
     val transition = rememberInfiniteTransition(label = "adaptive_skeleton_anim")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
@@ -178,22 +185,16 @@ fun StashGridPhotoCard(
         ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0.0f) })
     }
 
-    // Smooth, lightweight crossfade + subtle scale entrance animation seamlessly replacing skeleton
-    var isCardVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(scene.id) {
-        isCardVisible = true
-    }
-
     val animatedCardAlpha by animateFloatAsState(
-        targetValue = if (isCardVisible) (if (isAlreadySaved && !isSelected) 0.65f else 1.0f) else 0f,
-        animationSpec = tween(durationMillis = 220, easing = LinearOutSlowInEasing),
-        label = "card_entrance_alpha"
+        targetValue = if (isAlreadySaved && !isSelected) 0.65f else 1.0f,
+        animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
+        label = "card_saved_alpha"
     )
 
     val animatedCardScale by animateFloatAsState(
-        targetValue = if (isCardVisible) (if (isSelected) 0.978f else 1.0f) else 0.98f,
-        animationSpec = tween(durationMillis = 220, easing = LinearOutSlowInEasing),
-        label = "card_entrance_scale"
+        targetValue = if (isSelected) 0.978f else 1.0f,
+        animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
+        label = "card_select_scale"
     )
 
     val selectionProgress by animateFloatAsState(
@@ -225,20 +226,29 @@ fun StashGridPhotoCard(
         border = null
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 1. Cover Image Box: Fixed 16:9 aspect ratio with adaptiveSkeleton placeholder
+            var isImageLoaded by remember(scene.coverUrl) { mutableStateOf(false) }
+            // 1. Cover Image Box: Fixed 16:9 aspect ratio with adaptiveSkeleton placeholder (paused once loaded)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                    .adaptiveSkeleton(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                    .adaptiveSkeleton(
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                        enabled = !isImageLoaded && !scene.coverUrl.isNullOrBlank()
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 if (!scene.coverUrl.isNullOrBlank()) {
                     val imageRequest = remember(scene.coverUrl) {
                         ImageRequest.Builder(context)
                             .data(scene.coverUrl)
-                            .crossfade(300)
+                            .memoryCacheKey(scene.coverUrl)
+                            .diskCacheKey(scene.coverUrl)
+                            .size(640, 360)
+                            .precision(Precision.INEXACT)
+                            .allowHardware(true)
+                            .crossfade(200)
                             .build()
                     }
                     AsyncImage(
@@ -246,6 +256,7 @@ fun StashGridPhotoCard(
                         contentDescription = scene.title,
                         contentScale = ContentScale.Crop,
                         colorFilter = if (isAlreadySaved) grayscaleFilter else null,
+                        onSuccess = { isImageLoaded = true },
                         modifier = Modifier
                             .fillMaxSize()
                             .privacyImageBlur(isBetaTest)

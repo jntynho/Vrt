@@ -80,23 +80,36 @@ enum class SubtitleFontFamily(val label: String) {
     MONOSPACE("Mono")
 }
 
-fun formatQualityDisplayLabel(raw: String): String {
+private fun qualityTierRank(label: String): Int = when (label) {
+    "VR 360" -> 2880
+    "2160p" -> 2160
+    "1440p" -> 1440
+    "1080p" -> 1080
+    "720p" -> 720
+    else -> 0
+}
+
+fun resolveAllowedQualityLabel(raw: String, url: String = ""): String? {
     val lower = raw.lowercase().trim()
-    val is48fps = lower.contains("48fps") || lower.contains("1080i")
-    val isMp4 = lower.contains("mp4")
+    val urlLower = url.lowercase()
     return when {
-        lower.contains("2160") || lower.contains("4k") || lower.contains("uhd") -> "2160p (4K)"
+        lower.contains("vr") -> "VR 360"
+        lower.contains("2160") || lower.contains("4k") || lower.contains("uhd") -> "2160p"
         lower.contains("1440") || lower.contains("2k") || lower.contains("qhd") -> "1440p"
-        is48fps -> "1080p 48fps"
-        lower.contains("1080") || lower.contains("fhd") || lower == "hd" -> if (isMp4) "1080p (MP4)" else "1080p"
-        lower.contains("720") -> if (isMp4) "720p (MP4)" else "720p"
-        lower.contains("480") -> "480p"
-        lower.contains("360") && !lower.contains("vr") -> "360p"
-        else -> {
-            val digits = raw.filter { it.isDigit() }
-            if (digits.isNotEmpty()) "${digits}p" else raw
-        }
+        lower.contains("1080") || lower.contains("fhd") || lower == "hd" -> "1080p"
+        lower.contains("720") -> "720p"
+        lower.contains("480") || lower.contains("360") || lower.contains("240") || lower.contains("144") || lower.contains("auto") -> null
+        urlLower.contains("2160") || urlLower.contains("4k") -> "2160p"
+        urlLower.contains("1440") || urlLower.contains("2k") -> "1440p"
+        urlLower.contains("1080") -> "1080p"
+        urlLower.contains("720") -> "720p"
+        lower.contains("direct") || lower.contains("source") || lower.contains("stream") || lower.contains("hls") || lower.contains("dash") -> "1080p"
+        else -> null
     }
+}
+
+fun formatQualityDisplayLabel(raw: String): String {
+    return resolveAllowedQualityLabel(raw) ?: "720p"
 }
 
 enum class PlayerPanelMenu {
@@ -181,13 +194,24 @@ fun PlayerControlsOverlay(
         }
     }
 
-    val cleanQualities = remember(qualities) {
+    val cleanQualities = remember(qualities, selectedQualityIndex) {
         val rawList = if (qualities.isNotEmpty()) qualities else listOf(StreamQuality(quality = "1080p", url = ""))
-        val mapped = rawList.mapIndexed { idx, q ->
-            idx to formatQualityDisplayLabel(q.quality)
+        val validPairs = rawList.mapIndexedNotNull { idx, q ->
+            val label = resolveAllowedQualityLabel(q.quality, q.url)
+            if (label != null) idx to label else null
+        }.ifEmpty {
+            val fallbackIdx = selectedQualityIndex.coerceIn(0, rawList.lastIndex)
+            listOf(fallbackIdx to "720p")
         }
-        val seen = mutableSetOf<String>()
-        mapped.filter { seen.add(it.second) }
+
+        validPairs
+            .groupBy { it.second }
+            .map { (label, group) ->
+                val chosenIdx = group.firstOrNull { it.first == selectedQualityIndex }?.first
+                    ?: group.first().first
+                chosenIdx to label
+            }
+            .sortedByDescending { qualityTierRank(it.second) }
     }
 
     AnimatedVisibility(
@@ -652,7 +676,9 @@ fun PlayerControlsOverlay(
                                                     verticalAlignment = Alignment.CenterVertically,
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                                 ) {
-                                                    val currentLabel = cleanQualities.find { it.first == selectedQualityIndex }?.second ?: "Auto"
+                                                    val currentLabel = cleanQualities.find { it.first == selectedQualityIndex }?.second
+                                                        ?: cleanQualities.firstOrNull()?.second
+                                                        ?: "1080p"
                                                     Text(
                                                         text = currentLabel,
                                                         color = accent,

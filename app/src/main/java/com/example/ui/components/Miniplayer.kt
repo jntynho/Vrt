@@ -184,7 +184,7 @@ fun Miniplayer(
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = false
-                    keepScreenOn = true
+                    keepScreenOn = isPlaying && isActiveInPager
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     layoutParams = FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -196,6 +196,13 @@ fun Miniplayer(
                 if (playerView.player != exoPlayer) {
                     playerView.player = exoPlayer
                 }
+                playerView.keepScreenOn = isPlaying && isActiveInPager
+            },
+            onRelease = { playerView ->
+                playerView.player = null
+            },
+            onReset = { playerView ->
+                playerView.player = null
             },
             modifier = Modifier.fillMaxSize()
         )
@@ -245,7 +252,12 @@ fun Miniplayer(
                     Button(
                         onClick = {
                             errorMessage = null
-                            val mediaSource = PlayerFactory.buildMediaSource(context, videoUrl)
+                            isBuffering = true
+                            val mediaSource = PlayerFactory.buildMediaSource(
+                                context = context,
+                                rawUrl = videoUrl,
+                                headers = mapOf("Referer" to "https://cum.st/creators")
+                            )
                             exoPlayer.setMediaSource(mediaSource)
                             exoPlayer.prepare()
                             exoPlayer.play()

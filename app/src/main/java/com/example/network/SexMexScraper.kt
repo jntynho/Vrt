@@ -12,7 +12,13 @@ import java.util.concurrent.ConcurrentHashMap
 
 data class SexMexSearchResult(
     val models: List<StashPerformer>,
-    val scenes: List<StashScene>
+    val scenes: List<StashScene>,
+    val nextPageUrl: String? = null
+)
+
+data class SexMexScenesPage(
+    val scenes: List<StashScene>,
+    val nextPageUrl: String? = null
 )
 
 object SexMexScraper {
@@ -25,19 +31,135 @@ object SexMexScraper {
     }
 
     private val searchCache = ConcurrentHashMap<String, CacheEntry<SexMexSearchResult>>()
-    private val scenesCache = ConcurrentHashMap<String, CacheEntry<List<StashScene>>>()
+    private val scenesPageCache = ConcurrentHashMap<String, CacheEntry<SexMexScenesPage>>()
     private val modelAvatarCache = ConcurrentHashMap<String, String>()
-    private var latestScenesCache: CacheEntry<List<StashScene>>? = null
+    private var latestScenesPageCache: CacheEntry<SexMexScenesPage>? = null
 
     // Pre-compiled fast Regexes to avoid full DOM overhead on single-value extractions
     private val FAST_AVATAR_REGEX = Regex("""class=[\"'][^\"']*model_bio_thumb[^\"']*[\"'][^>]*src=[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
     private val FAST_AVATAR_FALLBACK_REGEX = Regex("""src=[\"']([^\"']+)[\"'][^>]*class=[\"'][^\"']*model_bio_thumb""", RegexOption.IGNORE_CASE)
     private val FAST_CONTENTTHUMBS_REGEX = Regex("""src=[\"']([^\"']*contentthumbs[^\"']*)[\"']""", RegexOption.IGNORE_CASE)
     private val FAST_PICTURE_SRCSET_REGEX = Regex("""<picture[^>]*>[\s\S]*?<source[^>]+srcset=[\"']([^\"']+)[\"']""", RegexOption.IGNORE_CASE)
+    private val NUMERIC_DATE_REGEX = Regex("""\b(\d{1,4})[/\.-](\d{1,2})[/\.-](\d{2,4})\b""")
+    private val TEXT_MONTH_DATE_REGEX = Regex(
+        """\b(?:(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s+(\d{4})|(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s+(\d{4}))\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun extractCleanUrlFromSrcset(rawSrcset: String?): String? {
+        if (rawSrcset.isNullOrBlank()) return null
+        val candidates = rawSrcset.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (candidates.isEmpty()) return null
+        val chosen = candidates.first()
+            .substringBefore(" ")
+            .substringBefore("\t")
+            .trim()
+        return chosen.ifEmpty { null }
+    }
+
+    private fun normalizeUrl(rawUrl: String?): String? {
+        val cleaned = rawUrl?.trim()?.replace("&amp;", "&")?.takeIf { it.isNotEmpty() } ?: return null
+        return when {
+            cleaned.startsWith("http://", ignoreCase = true) || cleaned.startsWith("https://", ignoreCase = true) -> cleaned
+            cleaned.startsWith("//") -> "https:$cleaned"
+            cleaned.startsWith("/") -> "$BASE_URL$cleaned"
+            else -> "$BASE_URL/$cleaned"
+        }
+    }
+
+    private fun monthNameToNumber(monthName: String): String? {
+        return when (monthName.take(3).lowercase()) {
+            "jan" -> "01"
+            "feb" -> "02"
+            "mar" -> "03"
+            "apr" -> "04"
+            "may" -> "05"
+            "jun" -> "06"
+            "jul" -> "07"
+            "aug" -> "08"
+            "sep" -> "09"
+            "oct" -> "10"
+            "nov" -> "11"
+            "dec" -> "12"
+            else -> null
+        }
+    }
+
+    private fun formatToYyyyMmDd(raw: String): String {
+        val numericMatch = NUMERIC_DATE_REGEX.find(raw)
+        if (numericMatch != null) {
+            val p1 = numericMatch.groupValues[1]
+            val p2 = numericMatch.groupValues[2]
+            val p3 = numericMatch.groupValues[3]
+
+            return if (p1.length == 4) {
+                val n2 = p2.toIntOrNull() ?: 1
+                val n3 = p3.toIntOrNull() ?: 1
+                val (month, day) = if (n2 > 12 && n3 <= 12) Pair(p3, p2) else Pair(p2, p3)
+                "$p1-${month.padStart(2, '0')}-${day.padStart(2, '0')}"
+            } else if (p3.length == 4 || p3.length == 2) {
+                val year = if (p3.length == 2) "20$p3" else p3
+                val n1 = p1.toIntOrNull() ?: 1
+                val n2 = p2.toIntOrNull() ?: 1
+                val (month, day) = if (n1 > 12 && n2 <= 12) Pair(p2, p1) else Pair(p1, p2)
+                "$year-${month.padStart(2, '0')}-${day.padStart(2, '0')}"
+            } else {
+                raw
+            }
+        }
+
+        val textMatch = TEXT_MONTH_DATE_REGEX.find(raw)
+        if (textMatch != null) {
+            val m1 = textMatch.groupValues[1]
+            if (m1.isNotEmpty()) {
+                val month = monthNameToNumber(m1) ?: return raw
+                val day = textMatch.groupValues[2].padStart(2, '0')
+                val year = textMatch.groupValues[3]
+                return "$year-$month-$day"
+            } else {
+                val day = textMatch.groupValues[4].padStart(2, '0')
+                val month = monthNameToNumber(textMatch.groupValues[5]) ?: return raw
+                val year = textMatch.groupValues[6]
+                return "$year-$month-$day"
+            }
+        }
+
+        return raw
+    }
+
+    private fun containsDatePattern(text: String): Boolean {
+        return NUMERIC_DATE_REGEX.containsMatchIn(text) || TEXT_MONTH_DATE_REGEX.containsMatchIn(text)
+    }
+
+    private fun extractNextPageUrl(doc: org.jsoup.nodes.Document, currentUrl: String): String? {
+        val selectors = listOf(
+            "a[rel=next]",
+            "ul.pagination li.active + li a",
+            ".pagination li.active + li a",
+            "a.next",
+            "a.page-link[aria-label*=Next]",
+            ".pagination a:containsOwn(Next)",
+            ".pagination a:containsOwn(»)",
+            ".pagination a:containsOwn(>)"
+        )
+        val normalizedCurrent = currentUrl.substringBefore("#").trimEnd('/')
+        for (selector in selectors) {
+            val el = doc.selectFirst(selector) ?: continue
+            val rawHref = el.attr("abs:href").ifBlank { el.attr("href") }.trim()
+            if (rawHref.isBlank() || rawHref == "#" || rawHref.startsWith("javascript:", ignoreCase = true)) continue
+            val fullUrl = normalizeUrl(rawHref) ?: continue
+            if (fullUrl.substringBefore("#").trimEnd('/') != normalizedCurrent) {
+                return fullUrl
+            }
+        }
+        return null
+    }
 
     suspend fun searchSexMex(query: String): SexMexSearchResult {
         val cleanQuery = query.trim()
-        if (cleanQuery.isEmpty()) return SexMexSearchResult(emptyList(), emptyList())
+        if (cleanQuery.isEmpty()) return SexMexSearchResult(emptyList(), emptyList(), null)
 
         val cacheKey = cleanQuery.lowercase()
         searchCache[cacheKey]?.takeIf { it.isValid() }?.let {
@@ -47,13 +169,14 @@ object SexMexScraper {
 
         // Direct SexMex URL handling
         if (cleanQuery.startsWith("http://", ignoreCase = true) || cleanQuery.startsWith("https://", ignoreCase = true)) {
-            val scenes = scrapeSexMexPage(cleanQuery)
-            val result = SexMexSearchResult(emptyList(), scenes)
+            val pageResult = scrapeSexMexPageWithPagination(cleanQuery)
+            val result = SexMexSearchResult(emptyList(), pageResult.scenes, pageResult.nextPageUrl)
             searchCache[cacheKey] = CacheEntry(result)
             return result
         }
 
         val directScenes = mutableListOf<StashScene>()
+        var directNextPageUrl: String? = null
 
         try {
             val searchUrl = "$BASE_URL/tour/search.php?query=${URLEncoder.encode(cleanQuery, "UTF-8")}"
@@ -69,12 +192,12 @@ object SexMexScraper {
 
                 for (link in modelLinks) {
                     val href = link.attr("href")
-                    if (href.contains("models.html")) continue
+                    if (href.contains("models.html", ignoreCase = true)) continue
                     val name = link.text().trim()
                     if (name.length > 1) {
                         val normName = name.lowercase().replace(" ", "")
                         if (normName.contains(normQuery) || normQuery.contains(normName)) {
-                            val fullUrl = if (href.startsWith("http")) href else "$BASE_URL${if (href.startsWith("/")) "" else "/"}$href"
+                            val fullUrl = normalizeUrl(href) ?: continue
                             if (!modelsMap.containsKey(name.lowercase())) {
                                 modelsMap[name.lowercase()] = fullUrl
                             }
@@ -109,12 +232,12 @@ object SexMexScraper {
                         // Concurrently fetch the first model's scenes in the SAME parallel batch
                         val firstModelUrl = topModels.first().value
                         val firstModelScenesDeferred = async(Dispatchers.IO) {
-                            scrapeSexMexPage(firstModelUrl)
+                            scrapeSexMexPageWithPagination(firstModelUrl)
                         }
 
                         val resolvedModels = modelsDeferred.awaitAll()
-                        val resolvedScenes = firstModelScenesDeferred.await()
-                        SexMexSearchResult(resolvedModels, resolvedScenes)
+                        val resolvedPage = firstModelScenesDeferred.await()
+                        SexMexSearchResult(resolvedModels, resolvedPage.scenes, resolvedPage.nextPageUrl)
                     }
 
                     searchCache[cacheKey] = CacheEntry(result)
@@ -122,46 +245,55 @@ object SexMexScraper {
                 } else {
                     // When no performer name matched, parse scenes directly from search page
                     directScenes.addAll(parseScenesFromHtml(doc, searchUrl))
+                    directNextPageUrl = extractNextPageUrl(doc, searchUrl)
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error in SexMex search for '$cleanQuery'", e)
         }
 
-        val finalResult = SexMexSearchResult(emptyList(), directScenes.distinctBy { it.id })
+        val finalResult = SexMexSearchResult(emptyList(), directScenes.distinctBy { it.id }, directNextPageUrl)
         searchCache[cacheKey] = CacheEntry(finalResult)
         return finalResult
     }
 
-    suspend fun scrapeSexMexPage(pageUrl: String): List<StashScene> {
-        scenesCache[pageUrl]?.takeIf { it.isValid() }?.let {
+    suspend fun scrapeSexMexPageWithPagination(pageUrl: String): SexMexScenesPage {
+        scenesPageCache[pageUrl]?.takeIf { it.isValid() }?.let {
             return it.data
         }
 
         val scenes = mutableListOf<StashScene>()
+        var nextPageUrl: String? = null
         try {
             val html = NetworkClient.getHtml(pageUrl)
             if (html.isNotEmpty()) {
                 val doc = Jsoup.parse(html, pageUrl)
                 scenes.addAll(parseScenesFromHtml(doc, pageUrl))
+                nextPageUrl = extractNextPageUrl(doc, pageUrl)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error scraping SexMex page: $pageUrl", e)
         }
 
         val distinctScenes = scenes.distinctBy { it.id }
+        val pageResult = SexMexScenesPage(distinctScenes, nextPageUrl)
         if (distinctScenes.isNotEmpty()) {
-            scenesCache[pageUrl] = CacheEntry(distinctScenes)
+            scenesPageCache[pageUrl] = CacheEntry(pageResult)
         }
-        return distinctScenes
+        return pageResult
     }
 
-    suspend fun getLatestSexMexScenes(): List<StashScene> {
-        latestScenesCache?.takeIf { it.isValid(5 * 60 * 1000L) }?.let {
+    suspend fun scrapeSexMexPage(pageUrl: String): List<StashScene> {
+        return scrapeSexMexPageWithPagination(pageUrl).scenes
+    }
+
+    suspend fun getLatestSexMexScenesWithPagination(): SexMexScenesPage {
+        latestScenesPageCache?.takeIf { it.isValid(5 * 60 * 1000L) }?.let {
             return it.data
         }
 
         val scenes = mutableListOf<StashScene>()
+        var nextPageUrl: String? = null
         val candidateUrls = listOf(
             "$BASE_URL/tour/categories/movies.html",
             "$BASE_URL/tour/"
@@ -175,6 +307,7 @@ object SexMexScraper {
                     val parsed = parseScenesFromHtml(doc, url)
                     if (parsed.isNotEmpty()) {
                         scenes.addAll(parsed)
+                        nextPageUrl = extractNextPageUrl(doc, url)
                         break
                     }
                 }
@@ -184,10 +317,15 @@ object SexMexScraper {
         }
 
         val distinct = scenes.distinctBy { it.id }
+        val pageResult = SexMexScenesPage(distinct, nextPageUrl)
         if (distinct.isNotEmpty()) {
-            latestScenesCache = CacheEntry(distinct)
+            latestScenesPageCache = CacheEntry(pageResult)
         }
-        return distinct
+        return pageResult
+    }
+
+    suspend fun getLatestSexMexScenes(): List<StashScene> {
+        return getLatestSexMexScenesWithPagination().scenes
     }
 
     private suspend fun fetchModelAvatarFast(modelUrl: String, modelName: String): String? {
@@ -200,19 +338,18 @@ object SexMexScraper {
                 // 1. Ultra-fast Regex match (0.1ms)
                 val m = FAST_AVATAR_REGEX.find(html) ?: FAST_AVATAR_FALLBACK_REGEX.find(html) ?: FAST_CONTENTTHUMBS_REGEX.find(html)
                 if (m != null && m.groupValues.size > 1) {
-                    avatarUrl = m.groupValues[1].replace("&amp;", "&")
+                    avatarUrl = extractCleanUrlFromSrcset(m.groupValues[1]) ?: m.groupValues[1]
                 }
 
                 // 2. Fallback to Jsoup only if regex didn't find it
                 if (avatarUrl.isNullOrBlank()) {
                     val modelDoc = Jsoup.parse(html, modelUrl)
                     val imgEl = modelDoc.selectFirst("img.model_bio_thumb, .profile-pic img, img[alt*='$modelName'], img[src*='contentthumbs']")
-                    avatarUrl = imgEl?.attr("src")?.ifEmpty { null }?.replace("&amp;", "&")
+                    avatarUrl = imgEl?.attr("src")?.ifEmpty { null }
+                        ?: extractCleanUrlFromSrcset(modelDoc.selectFirst("picture source")?.attr("srcset"))
                 }
 
-                if (avatarUrl != null && !avatarUrl.startsWith("http")) {
-                    avatarUrl = "$BASE_URL${if (avatarUrl.startsWith("/")) "" else "/"}$avatarUrl"
-                }
+                avatarUrl = normalizeUrl(avatarUrl)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching model avatar for $modelName", e)
@@ -230,15 +367,39 @@ object SexMexScraper {
         val seenUrls = mutableSetOf<String>()
 
         for (link in updateLinks) {
-            val sceneUrl = link.attr("abs:href").ifEmpty { link.attr("href") }
+            val rawHref = link.attr("abs:href").ifEmpty { link.attr("href") }
+            val sceneUrl = normalizeUrl(rawHref) ?: continue
             if (sceneUrl.isBlank() || seenUrls.contains(sceneUrl)) continue
 
-            // Determine title
+            // Resolve the card container first so split image/title <a href="/updates/..."> links share full card metadata
+            val container = link.parents().firstOrNull {
+                it.hasClass("update_thumb") ||
+                    it.hasClass("thumb") ||
+                    it.hasClass("thumbs") ||
+                    it.hasClass("col-lg-4") ||
+                    it.hasClass("col-md-4") ||
+                    it.hasClass("col-sm-6") ||
+                    it.hasClass("scene-card") ||
+                    it.tagName() == "article" ||
+                    it.selectFirst(".scene-date") != null
+            } ?: link.parent()
+
+            // Determine title from link or its enclosing card container
             var rawTitle = link.attr("title").trim()
             if (rawTitle.isEmpty()) {
-                rawTitle = link.selectFirst("h3, h5, .scene-title, img[alt]")?.text()
-                    ?.ifEmpty { link.selectFirst("img")?.attr("alt") }
+                rawTitle = link.selectFirst("h3, h4, h5, .scene-title, .update-title, img[alt]")?.text()?.trim()
+                    ?.ifEmpty { link.selectFirst("img")?.attr("alt")?.trim() }
                     ?: ""
+            }
+            if (rawTitle.isEmpty() && container != null) {
+                rawTitle = container.selectFirst("h3, h4, h5, .scene-title, .update-title, a[href*='/updates/'][title]")?.let { el ->
+                    el.attr("title").trim().ifEmpty { el.text().trim() }
+                }?.ifEmpty {
+                    container.select("a[href*='/updates/'], a[href*='/tour/updates/']")
+                        .map { it.text().trim() }
+                        .firstOrNull { it.isNotEmpty() }
+                        ?: container.selectFirst("img[alt]")?.attr("alt")?.trim()
+                } ?: ""
             }
 
             // Decode basic HTML entities that might appear in title
@@ -253,34 +414,11 @@ object SexMexScraper {
             val actorsFromTitleList = mutableListOf<String>()
             var extractedDateFromTitle: String? = null
 
-            val dateRegex = Regex("""\b(\d{1,4})[/\.-](\d{1,2})[/\.-](\d{2,4})\b""")
-
-            // Helper to clean and format a date string to YYYY-MM-DD if possible
-            fun formatToYyyyMmDd(raw: String): String {
-                val m = dateRegex.find(raw) ?: return raw
-                val p1 = m.groupValues[1]
-                val p2 = m.groupValues[2]
-                val p3 = m.groupValues[3]
-                
-                return if (p1.length == 4) {
-                    // YYYY-MM-DD
-                    "$p1-${p2.padStart(2, '0')}-${p3.padStart(2, '0')}"
-                } else if (p3.length == 4) {
-                    // MM/DD/YYYY or DD/MM/YYYY
-                    "$p3-${p1.padStart(2, '0')}-${p2.padStart(2, '0')}"
-                } else if (p3.length == 2) {
-                    // MM/DD/YY -> 20YY
-                    "20$p3-${p1.padStart(2, '0')}-${p2.padStart(2, '0')}"
-                } else {
-                    raw
-                }
-            }
-
             fun processPart(part: String) {
                 val trimmed = part.trim()
-                if (dateRegex.containsMatchIn(trimmed)) {
+                if (containsDatePattern(trimmed)) {
                     extractedDateFromTitle = formatToYyyyMmDd(trimmed)
-                } else {
+                } else if (trimmed.isNotEmpty()) {
                     actorsFromTitleList.add(trimmed)
                 }
             }
@@ -306,42 +444,35 @@ object SexMexScraper {
                 for (part in titleParts) {
                     processPart(part)
                 }
-                
+
                 // Determine the clean title: first part that is not a date
-                val nonDateParts = titleParts.filter { !dateRegex.containsMatchIn(it) }
+                val nonDateParts = titleParts.filter { !containsDatePattern(it) && it.isNotBlank() }
                 if (nonDateParts.isNotEmpty()) {
                     cleanTitle = nonDateParts[0].trim()
                 }
             } else {
                 // Single part, check if it contains a date
-                val m = dateRegex.find(rawTitle)
+                val m = NUMERIC_DATE_REGEX.find(rawTitle) ?: TEXT_MONTH_DATE_REGEX.find(rawTitle)
                 if (m != null) {
                     extractedDateFromTitle = formatToYyyyMmDd(m.value)
                     cleanTitle = rawTitle.replace(m.value, "").replace(Regex("""\s+-\s+|\s+\.\s+|\s+&\s+"""), " ").trim()
                 }
             }
 
-            // Cover thumbnail
-            var coverUrl = link.selectFirst("picture source")?.attr("srcset")
-            if (coverUrl.isNullOrEmpty()) {
-                coverUrl = link.selectFirst("img")?.attr("src")
-            }
-            if (coverUrl.isNullOrEmpty()) {
-                val parent = link.parent()
-                coverUrl = parent?.selectFirst("picture source")?.attr("srcset")
-                    ?: parent?.selectFirst("img")?.attr("src")
-            }
+            // Cover thumbnail (supports srcset with multiple descriptors + container fallback)
+            val rawCoverCandidate = extractCleanUrlFromSrcset(link.selectFirst("picture source")?.attr("srcset"))
+                ?: link.selectFirst("img")?.let { img ->
+                    img.attr("data-src").ifBlank { img.attr("src") }
+                }?.takeIf { it.isNotBlank() }
+                ?: extractCleanUrlFromSrcset(container?.selectFirst("picture source")?.attr("srcset"))
+                ?: container?.selectFirst("img")?.let { img ->
+                    img.attr("data-src").ifBlank { img.attr("src") }
+                }?.takeIf { it.isNotBlank() }
 
-            if (coverUrl != null && coverUrl.startsWith("//")) {
-                coverUrl = "https:$coverUrl"
-            } else if (coverUrl != null && !coverUrl.startsWith("http")) {
-                coverUrl = "$BASE_URL${if (coverUrl.startsWith("/")) "" else "/"}$coverUrl"
-            }
-            val cleanCoverUrl = coverUrl?.replace("&amp;", "&")
+            val cleanCoverUrl = normalizeUrl(rawCoverCandidate)
 
-            // Date and details from sibling / parent
-            val container = link.parents().firstOrNull { it.hasClass("update_thumb") || it.hasClass("thumb") || it.hasClass("thumbs") || it.selectFirst(".scene-date") != null } ?: link.parent()
-            var dateStr = container?.selectFirst(".scene-date, time, .date")?.text()?.trim()
+            // Date and details from sibling / parent container
+            var dateStr = container?.selectFirst(".scene-date, time, .date, .update-date")?.text()?.trim()
             val descr = container?.selectFirst(".scene-descr, .description, p")?.text()?.trim()
 
             // Process and format extracted date
@@ -399,14 +530,20 @@ object SexMexScraper {
             if (performersList.isEmpty()) {
                 for (name in actorsFromTitleList) {
                     val cleanName = name.trim()
-                    if (cleanName.isNotBlank() && cleanName.length > 2) {
+                    if (cleanName.isNotBlank() && cleanName.length > 2 && !cleanName.equals(cleanTitle, ignoreCase = true)) {
                         performersList.add(cleanName)
                     }
                 }
             }
 
             val performers = performersList.distinct().map {
-                StashPerformer(id = UUID.randomUUID().toString(), name = it, gender = "FEMALE", imageUrl = null)
+                val slug = it.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+                StashPerformer(
+                    id = "sexmex:${slug.ifBlank { UUID.randomUUID().toString() }}",
+                    name = it,
+                    gender = "FEMALE",
+                    imageUrl = null
+                )
             }
 
             if (cleanTitle.isNotBlank() && !cleanCoverUrl.isNullOrBlank()) {
@@ -416,7 +553,7 @@ object SexMexScraper {
                         id = sceneUrl,
                         title = cleanTitle,
                         details = descr ?: "SexMex Official Scene",
-                        date = dateStr ?: "Unknown Date",
+                        date = dateStr?.ifBlank { null },
                         studioId = "sexmex",
                         studioName = "SexMex",
                         studioLogo = null,
@@ -435,13 +572,13 @@ object SexMexScraper {
             if (html.isEmpty()) return null
 
             // 1. Fast Regex attempt (0.1 ms)
-            var coverUrl = FAST_PICTURE_SRCSET_REGEX.find(html)?.groupValues?.getOrNull(1)
+            var coverUrl = extractCleanUrlFromSrcset(FAST_PICTURE_SRCSET_REGEX.find(html)?.groupValues?.getOrNull(1))
                 ?: FAST_CONTENTTHUMBS_REGEX.find(html)?.groupValues?.getOrNull(1)
 
             // 2. Jsoup Fallback
             if (coverUrl.isNullOrEmpty()) {
                 val doc = Jsoup.parse(html, sceneUrl)
-                coverUrl = doc.selectFirst("picture source")?.attr("srcset")
+                coverUrl = extractCleanUrlFromSrcset(doc.selectFirst("picture source")?.attr("srcset"))
                 if (coverUrl.isNullOrEmpty()) {
                     coverUrl = doc.selectFirst("img[src*='contentthumbs'], .update_thumb img, img.scene-cover")?.attr("src")
                 }
@@ -450,12 +587,7 @@ object SexMexScraper {
                 }
             }
 
-            if (coverUrl != null && coverUrl.startsWith("//")) {
-                coverUrl = "https:$coverUrl"
-            } else if (coverUrl != null && !coverUrl.startsWith("http")) {
-                coverUrl = "$BASE_URL${if (coverUrl.startsWith("/")) "" else "/"}$coverUrl"
-            }
-            return coverUrl?.replace("&amp;", "&")?.ifBlank { null }
+            return normalizeUrl(coverUrl)
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching fresh cover for $sceneUrl", e)
             return null

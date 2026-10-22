@@ -73,7 +73,8 @@ data class ActiveVideoPlayback(
     val subtitles: List<SubtitleTrack> = emptyList(),
     val headers: Map<String, String> = emptyMap(),
     val initialPositionMs: Long = 0L,
-    val startInLandscape: Boolean = false
+    val startInLandscape: Boolean = false,
+    val startInVrMode: Boolean = false
 )
 
 data class ActiveInlineVideoPlayback(
@@ -81,7 +82,8 @@ data class ActiveInlineVideoPlayback(
     val title: String,
     val qualities: List<StreamQuality>,
     val subtitles: List<SubtitleTrack> = emptyList(),
-    val headers: Map<String, String> = emptyMap()
+    val headers: Map<String, String> = emptyMap(),
+    val initialPositionMs: Long = 0L
 )
 
 private data class StashTabCache(
@@ -89,12 +91,14 @@ private data class StashTabCache(
     val performerResults: List<StashPerformer> = emptyList(),
     val studioResults: List<StashStudio> = emptyList(),
     val scenes: List<StashScene> = emptyList(),
+    val rawScenes: List<StashScene> = emptyList(),
     val selectedPerformer: StashPerformer? = null,
     val selectedStudio: StashStudio? = null,
     val totalCount: Int = 0,
     val currentPage: Int = 1,
     val canLoadMore: Boolean = false,
-    val sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
+    val sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE,
+    val sexMexNextPageUrl: String? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -185,16 +189,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // 2. Silent Debrid Handshake & TLS Connection Pre-Warming
+            // 2. Silent Debrid Handshake & TLS Connection Pre-Warming (Real-Debrid & TorBox)
             launch {
                 try {
-                    val rdKey = currentSett.realDebridApiKey.trim()
+                    val activeSett = repository.settings.first() ?: currentSett
+                    val rdKey = activeSett.realDebridApiKey.trim()
                     if (rdKey.isNotEmpty()) {
                         val pingReq = okhttp3.Request.Builder()
                             .url("https://api.real-debrid.com/rest/1.0/user")
                             .header("Authorization", "Bearer $rdKey")
                             .build()
                         com.example.network.NetworkClient.apiClient.newCall(pingReq).enqueue(object : okhttp3.Callback {
+                            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
+                            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                                response.close()
+                            }
+                        })
+                    }
+                    val tbKey = activeSett.torboxApiKey.trim()
+                    if (tbKey.isNotEmpty()) {
+                        val tbPingReq = okhttp3.Request.Builder()
+                            .url("https://api.torbox.app/v1/api/user/me")
+                            .header("Authorization", "Bearer $tbKey")
+                            .build()
+                        com.example.network.NetworkClient.apiClient.newCall(tbPingReq).enqueue(object : okhttp3.Callback {
                             override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
                             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
                                 response.close()
@@ -459,16 +477,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     else -> com.example.network.debrid.DebridOrder.AUTO
                 }
 
+                val episodeHint = scene?.title?.takeIf { it.isNotBlank() }
+                    ?: title.takeIf { it.isNotBlank() && it != "Media Stream" }
+
                 val resolved = withTimeout(45_000L) {
                     VideoResolvers.resolve(
                         rawUrl = trimmed,
                         torboxApiKey = settingsEntity.torboxApiKey,
                         realDebridApiKey = settingsEntity.realDebridApiKey,
-                        debridOrder = orderEnum
+                        debridOrder = orderEnum,
+                        episodeHint = episodeHint
                     )
                 }
 
                 val combinedQualities = resolved.qualities.toMutableList()
+
+                val vrCandidate = scene?.urlVR?.trim()?.takeIf { it.isNotBlank() }
+                    ?: scene?.magnetVR?.trim()?.takeIf { it.isNotBlank() }
+                    ?: scene?.torrentUrlVR?.trim()?.takeIf { it.isNotBlank() }
+
+                val isVrSelection = scene != null && (
+                    trimmed == scene.urlVR?.trim() ||
+                    trimmed == scene.magnetVR?.trim() ||
+                    trimmed == scene.torrentUrlVR?.trim()
+                )
+
+                if (isVrSelection) {
+                    for (i in combinedQualities.indices) {
+                        val q = combinedQualities[i]
+                        if (!q.quality.contains("vr", ignoreCase = true)) {
+                            combinedQualities[i] = q.copy(quality = "VR 360")
+                        }
+                    }
+                }
 
                 if (scene != null) {
                     // 1. Check for 4K / 2160p candidate
@@ -476,13 +517,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ?: scene.magnet4K?.trim()?.takeIf { it.isNotBlank() }
                         ?: scene.torrentUrl4K?.trim()?.takeIf { it.isNotBlank() }
 
-                    if (fourKCandidate != null && combinedQualities.none { it.quality.contains("2160") || it.quality.contains("4k", ignoreCase = true) }) {
+                    if (fourKCandidate != null && trimmed != fourKCandidate && combinedQualities.none { it.quality.contains("2160") || it.quality.contains("4k", ignoreCase = true) }) {
                         combinedQualities.add(
                             StreamQuality(
-                                quality = if (fourKCandidate.startsWith("magnet:", ignoreCase = true)) "2160p (Magnet)" else "2160p",
+                                quality = "2160p",
                                 url = fourKCandidate,
                                 format = if (fourKCandidate.contains(".m3u8")) "HLS" else "MP4",
-                                isDefault = trimmed == fourKCandidate
+                                isDefault = false
                             )
                         )
                     }
@@ -492,50 +533,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ?: scene.magnet?.trim()?.takeIf { it.isNotBlank() }
                         ?: scene.torrentUrlHD?.trim()?.takeIf { it.isNotBlank() }
 
-                    if (hdCandidate != null && combinedQualities.none { it.quality.contains("1080") || it.quality.equals("hd", ignoreCase = true) }) {
+                    if (hdCandidate != null && trimmed != hdCandidate && combinedQualities.none { it.quality.contains("1080") || it.quality.equals("hd", ignoreCase = true) }) {
                         combinedQualities.add(
                             StreamQuality(
-                                quality = if (hdCandidate.startsWith("magnet:", ignoreCase = true)) "1080p (Magnet)" else "1080p",
+                                quality = "1080p",
                                 url = hdCandidate,
                                 format = if (hdCandidate.contains(".m3u8")) "HLS" else "MP4",
-                                isDefault = trimmed == hdCandidate
+                                isDefault = false
                             )
                         )
                     }
 
                     // 3. Check for VR candidate
-                    val vrCandidate = scene.urlVR?.trim()?.takeIf { it.isNotBlank() }
-                        ?: scene.magnetVR?.trim()?.takeIf { it.isNotBlank() }
-                        ?: scene.torrentUrlVR?.trim()?.takeIf { it.isNotBlank() }
-
-                    if (vrCandidate != null && combinedQualities.none { it.quality.contains("vr", ignoreCase = true) }) {
+                    if (vrCandidate != null && !isVrSelection && combinedQualities.none { it.quality.contains("vr", ignoreCase = true) }) {
                         combinedQualities.add(
                             StreamQuality(
                                 quality = "VR 360",
                                 url = vrCandidate,
                                 format = if (vrCandidate.contains(".m3u8")) "HLS" else "MP4",
-                                isDefault = trimmed == vrCandidate
+                                isDefault = false
                             )
                         )
                     }
                 }
 
-                // Sort qualities descending by resolution, respecting the selected/default stream
-                val finalQualities = combinedQualities.sortedWith(
-                    compareByDescending<StreamQuality> { it.isDefault }
-                        .thenByDescending { q ->
-                            when {
-                                q.quality.contains("vr", ignoreCase = true) -> 2880
-                                q.quality.contains("2160") || q.quality.contains("4k", ignoreCase = true) -> 2160
-                                q.quality.contains("1440") || q.quality.contains("2k", ignoreCase = true) -> 1440
-                                q.quality.contains("1080") || q.quality.contains("hd", ignoreCase = true) -> 1080
-                                q.quality.contains("720") -> 720
-                                q.quality.contains("480") -> 480
-                                q.quality.contains("360") -> 360
-                                else -> 100
-                            }
-                        }
-                )
+                // Normalize, filter to allowed tiers (VR 360, 2160p, 1440p, 1080p, 720p), deduplicate, and sort descending
+                val finalQualities = normalizeAndSortQualities(combinedQualities)
 
                 if (finalQualities.isEmpty()) {
                     _videoResolutionError.value = "No playable media qualities found for this source."
@@ -544,36 +567,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val primaryQuality = finalQualities.firstOrNull { it.isDefault } ?: finalQualities.first()
-                val isDebridStream = com.example.network.torrent.MagnetParser.parseHash(trimmed) != null ||
+                val isTrustedFastStream = com.example.network.torrent.MagnetParser.parseHash(trimmed) != null ||
+                    VideoResolvers.isHosterUrl(trimmed) ||
+                    GofileScraper.isGofileUrl(trimmed) ||
+                    CyberFileScraper.isCyberfileUrl(trimmed) ||
+                    VideoResolvers.isPornhubUrl(trimmed) ||
                     com.example.network.Scraping.isSupportedUrl(trimmed) ||
                     primaryQuality.url.contains("real-debrid.com", ignoreCase = true) ||
-                    primaryQuality.url.contains("torbox.app", ignoreCase = true)
+                    primaryQuality.url.contains("rdeb.io", ignoreCase = true) ||
+                    primaryQuality.url.contains("rdb.so", ignoreCase = true) ||
+                    primaryQuality.url.contains("torbox.app", ignoreCase = true) ||
+                    primaryQuality.url.contains("tb-cdn.st", ignoreCase = true) ||
+                    primaryQuality.format.equals("HLS", ignoreCase = true) ||
+                    primaryQuality.format.equals("DASH", ignoreCase = true)
 
                 val displayTitle = if (resolved.title.isNotBlank() && resolved.title != "Media Stream") resolved.title else title
-                val shouldPlayInline = cardId != null
+                val isVrModeLaunch = isVrSelection || primaryQuality.quality.contains("vr", ignoreCase = true)
+                val shouldPlayInline = cardId != null && !isVrModeLaunch
 
                 val combinedSubtitles = (resolved.subtitles + subtitles).distinctBy { it.url }
 
-                if (isDebridStream) {
-                    // Instant playback for Debrid CDN streams: bypass redundant network probing
+                withContext(Dispatchers.Main) {
+                    com.example.ui.components.PlayerSessionTracker.clearSession(sharedPlayerManager.getPlayer())
+                }
+
+                fun launchTargetPlayer() {
                     if (shouldPlayInline) {
                         _activeInlineVideo.value = ActiveInlineVideoPlayback(
                             cardId = cardId!!,
                             title = displayTitle,
                             qualities = finalQualities,
                             subtitles = combinedSubtitles,
-                            headers = resolved.headers
+                            headers = resolved.headers,
+                            initialPositionMs = initialPositionMs
                         )
                     } else {
+                        if (cardId != null) {
+                            _activeInlineVideo.value = null
+                            lastInlineCardId = null
+                        }
                         _activeVideo.value = ActiveVideoPlayback(
                             title = displayTitle,
                             qualities = finalQualities,
                             subtitles = combinedSubtitles,
                             headers = resolved.headers,
                             initialPositionMs = initialPositionMs,
-                            startInLandscape = startInLandscape
+                            startInLandscape = startInLandscape || isVrModeLaunch,
+                            startInVrMode = isVrModeLaunch
                         )
                     }
+                }
+
+                if (isTrustedFastStream) {
+                    // Instant playback for verified Debrid/CDN/HLS streams: bypass redundant network probing
+                    launchTargetPlayer()
                 } else {
                     _resolvingVideoStatus.value = "Verifying media stream..."
 
@@ -584,49 +631,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     when (validation) {
                         is ValidatedMediaResult.Valid -> {
-                            if (shouldPlayInline) {
-                                _activeInlineVideo.value = ActiveInlineVideoPlayback(
-                                    cardId = cardId!!,
-                                    title = displayTitle,
-                                    qualities = finalQualities,
-                                    subtitles = combinedSubtitles,
-                                    headers = resolved.headers
-                                )
-                            } else {
-                                _activeVideo.value = ActiveVideoPlayback(
-                                    title = displayTitle,
-                                    qualities = finalQualities,
-                                    subtitles = combinedSubtitles,
-                                    headers = resolved.headers,
-                                    initialPositionMs = initialPositionMs,
-                                    startInLandscape = startInLandscape
-                                )
-                            }
+                            launchTargetPlayer()
                         }
                         is ValidatedMediaResult.Invalid -> {
-                            if (primaryQuality.url.startsWith("http://", ignoreCase = true) ||
-                                primaryQuality.url.startsWith("https://", ignoreCase = true)
+                            val reason = validation.reason
+                            val isDefinitiveFailure = reason.contains("HTML", ignoreCase = true) ||
+                                reason.contains("HTTP 404", ignoreCase = true) ||
+                                reason.contains("HTTP 410", ignoreCase = true) ||
+                                reason.contains("HTTP 401", ignoreCase = true)
+                            if (!isDefinitiveFailure &&
+                                (primaryQuality.url.startsWith("http://", ignoreCase = true) ||
+                                    primaryQuality.url.startsWith("https://", ignoreCase = true))
                             ) {
-                                if (shouldPlayInline) {
-                                    _activeInlineVideo.value = ActiveInlineVideoPlayback(
-                                        cardId = cardId!!,
-                                        title = displayTitle,
-                                        qualities = finalQualities,
-                                        subtitles = combinedSubtitles,
-                                        headers = resolved.headers
-                                    )
-                                } else {
-                                    _activeVideo.value = ActiveVideoPlayback(
-                                        title = displayTitle,
-                                        qualities = finalQualities,
-                                        subtitles = combinedSubtitles,
-                                        headers = resolved.headers,
-                                        initialPositionMs = initialPositionMs,
-                                        startInLandscape = startInLandscape
-                                    )
-                                }
+                                launchTargetPlayer()
                             } else {
-                                _videoResolutionError.value = validation.reason
+                                _videoResolutionError.value = reason
                             }
                         }
                     }
@@ -636,9 +655,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _videoResolutionError.value = e.message ?: "Failed to resolve media stream"
             } finally {
                 _resolvingVideoStatus.value = null
-                if (_videoResolutionError.value == null) {
-                    _resolvingCardId.value = null
-                }
+                _resolvingCardId.value = null
             }
         }
     }
@@ -651,6 +668,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun closeVideo() {
         val currentVideo = _activeVideo.value
         val inlineId = lastInlineCardId
+        val resumePosMs = sharedPlayerManager.getPlayer().currentPosition.coerceAtLeast(0L)
         _activeVideo.value = null
 
         if (inlineId != null && currentVideo != null) {
@@ -659,7 +677,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 title = currentVideo.title,
                 qualities = currentVideo.qualities,
                 subtitles = currentVideo.subtitles,
-                headers = currentVideo.headers
+                headers = currentVideo.headers,
+                initialPositionMs = resumePosMs
             )
             lastInlineCardId = null
         } else {
@@ -740,6 +759,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _stashScenesList = MutableStateFlow<List<StashScene>>(emptyList())
     val stashScenesList: StateFlow<List<StashScene>> = _stashScenesList.asStateFlow()
 
+    private val _rawStashScenesList = MutableStateFlow<List<StashScene>>(emptyList())
+    private val blockedStudioNameIdMap = ConcurrentHashMap<String, String>()
+
     private val _stashSelectedPerformer = MutableStateFlow<StashPerformer?>(null)
     val stashSelectedPerformer: StateFlow<StashPerformer?> = _stashSelectedPerformer.asStateFlow()
 
@@ -775,12 +797,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var stashSearchJob: Job? = null
     private var stashScenesJob: Job? = null
+    private var stashLoadMoreJob: Job? = null
+    private var currentSexMexNextPageUrl: String? = null
 
     // Clean Tab State Cache Map
     private val stashTabCacheMap = ConcurrentHashMap<StashSearchType, StashTabCache>()
 
+    private fun syncCurrentTabToCache() {
+        val currentType = _stashActiveType.value
+        stashTabCacheMap[currentType] = StashTabCache(
+            query = _stashSearchQuery.value,
+            performerResults = if (currentType == StashSearchType.STUDIO) emptyList() else _stashPerformerResults.value,
+            studioResults = if (currentType == StashSearchType.STUDIO) _stashStudioResults.value else emptyList(),
+            scenes = _stashScenesList.value,
+            rawScenes = _rawStashScenesList.value,
+            selectedPerformer = if (currentType == StashSearchType.STUDIO) null else _stashSelectedPerformer.value,
+            selectedStudio = if (currentType == StashSearchType.STUDIO) _stashSelectedStudio.value else null,
+            totalCount = _stashTotalScenesCount.value,
+            currentPage = _stashCurrentPage.value,
+            canLoadMore = _stashCanLoadMore.value,
+            sortMode = _stashSortMode.value,
+            sexMexNextPageUrl = if (currentType == StashSearchType.SEXMEX) currentSexMexNextPageUrl else null
+        )
+    }
+
     fun setStashSearchQuery(query: String) {
         _stashSearchQuery.value = query
+        syncCurrentTabToCache()
     }
 
     fun setStashSearchExpanded(expanded: Boolean) {
@@ -790,18 +833,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setStashSortMode(mode: StashSceneSortMode, apiKey: String) {
         if (_stashSortMode.value == mode) return
         _stashSortMode.value = mode
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        syncCurrentTabToCache()
         val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
         when (_stashActiveType.value) {
             StashSearchType.ACTORS -> {
                 val performer = _stashSelectedPerformer.value
                 if (performer != null) {
-                    selectStashPerformer(performer, effectiveApiKey)
+                    selectStashPerformer(performer, effectiveApiKey, forceReload = true)
                 }
             }
             StashSearchType.STUDIO -> {
                 val studio = _stashSelectedStudio.value
                 if (studio != null) {
-                    selectStashStudio(studio, effectiveApiKey)
+                    selectStashStudio(studio, effectiveApiKey, forceReload = true)
                 }
             }
             StashSearchType.SEXMEX -> Unit
@@ -814,24 +860,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Cancel any in-flight search or scene loading jobs from previous tab so results never bleed across tabs
         stashSearchJob?.cancel()
         stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
         _isStashLoadingEntities.value = false
         _isStashLoadingScenes.value = false
         _isStashLoadingMore.value = false
 
         // 1. Cache current tab's isolated state
-        val currentType = _stashActiveType.value
-        stashTabCacheMap[currentType] = StashTabCache(
-            query = _stashSearchQuery.value,
-            performerResults = if (currentType == StashSearchType.STUDIO) emptyList() else _stashPerformerResults.value,
-            studioResults = if (currentType == StashSearchType.STUDIO) _stashStudioResults.value else emptyList(),
-            scenes = _stashScenesList.value,
-            selectedPerformer = if (currentType == StashSearchType.STUDIO) null else _stashSelectedPerformer.value,
-            selectedStudio = if (currentType == StashSearchType.STUDIO) _stashSelectedStudio.value else null,
-            totalCount = _stashTotalScenesCount.value,
-            currentPage = _stashCurrentPage.value,
-            canLoadMore = _stashCanLoadMore.value,
-            sortMode = _stashSortMode.value
-        )
+        syncCurrentTabToCache()
 
         _stashActiveType.value = type
         _stashSearchError.value = null
@@ -839,16 +874,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 2. Restore target tab's isolated cached state
         val cached = stashTabCacheMap[type] ?: StashTabCache()
+        val currentSettings = settings.value
+        val restoredRaw = cached.rawScenes.ifEmpty { cached.scenes }
         _stashSearchQuery.value = cached.query
         _stashPerformerResults.value = if (type == StashSearchType.STUDIO) emptyList() else cached.performerResults
         _stashStudioResults.value = if (type == StashSearchType.STUDIO) cached.studioResults else emptyList()
-        _stashScenesList.value = cached.scenes
+        _rawStashScenesList.value = restoredRaw
+        _stashScenesList.value = applyStudioFilter(restoredRaw, currentSettings)
         _stashTotalScenesCount.value = cached.totalCount
         _stashCurrentPage.value = cached.currentPage
         _stashCanLoadMore.value = cached.canLoadMore
         _stashSelectedPerformer.value = if (type == StashSearchType.STUDIO) null else cached.selectedPerformer
         _stashSelectedStudio.value = if (type == StashSearchType.STUDIO) cached.selectedStudio else null
         _stashSortMode.value = cached.sortMode
+        currentSexMexNextPageUrl = if (type == StashSearchType.SEXMEX) cached.sexMexNextPageUrl else null
     }
 
     fun toggleStashSceneSelection(sceneId: String) {
@@ -863,11 +902,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resetStashState() {
         stashSearchJob?.cancel()
         stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
         stashTabCacheMap.clear()
+        currentSexMexNextPageUrl = null
         _stashSearchQuery.value = ""
         _isStashSearchExpanded.value = false
         _stashPerformerResults.value = emptyList()
         _stashStudioResults.value = emptyList()
+        _rawStashScenesList.value = emptyList()
         _stashScenesList.value = emptyList()
         _stashSelectedPerformer.value = null
         _stashSelectedStudio.value = null
@@ -899,28 +941,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun performStashSearch(apiKey: String, query: String? = null) {
         val q = (query ?: _stashSearchQuery.value).trim()
         if (q.isBlank()) return
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        _stashSearchQuery.value = q
 
         stashSearchJob?.cancel()
         stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
         val searchTargetType = _stashActiveType.value
 
         stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingEntities.value = true
+            _isStashLoadingScenes.value = (searchTargetType == StashSearchType.SEXMEX)
             _stashSearchError.value = null
             _stashPerformerResults.value = emptyList()
             _stashStudioResults.value = emptyList()
             _stashSelectedPerformer.value = null
             _stashSelectedStudio.value = null
             _stashSelectedSceneIds.value = emptySet()
+            _rawStashScenesList.value = emptyList()
             _stashScenesList.value = emptyList()
+            _stashTotalScenesCount.value = 0
             _stashCurrentPage.value = 1
             _stashCanLoadMore.value = false
+            if (searchTargetType == StashSearchType.SEXMEX) {
+                currentSexMexNextPageUrl = null
+            }
+            syncCurrentTabToCache()
 
             when (searchTargetType) {
                 StashSearchType.ACTORS -> {
                     val res = StashDbApiService.searchPerformers(
                         query = q,
-                        apiKey = apiKey,
+                        apiKey = effectiveApiKey,
                         blockMalePerformers = settings.value.blockMalePerformers
                     )
                     res.onSuccess { rawPerformers ->
@@ -936,15 +989,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             selectedPerformer = sorted.firstOrNull(),
                             sortMode = _stashSortMode.value
                         )
-                        _isStashLoadingEntities.value = false
-                        if (sorted.isNotEmpty()) selectStashPerformer(sorted.first(), apiKey)
+                        if (sorted.isNotEmpty()) {
+                            _isStashLoadingScenes.value = true
+                            _isStashLoadingEntities.value = false
+                            selectStashPerformer(sorted.first(), effectiveApiKey, forceReload = true)
+                        } else {
+                            _isStashLoadingEntities.value = false
+                        }
                     }.onFailure { err ->
                         _stashSearchError.value = err.message ?: "Failed to search actors"
                         _isStashLoadingEntities.value = false
+                        syncCurrentTabToCache()
                     }
                 }
                 StashSearchType.STUDIO -> {
-                    val res = StashDbApiService.searchStudios(q, apiKey)
+                    val res = StashDbApiService.searchStudios(q, effectiveApiKey)
                     res.onSuccess { rawStudios ->
                         val sorted = rawStudios.sortedWith(
                             compareByDescending<StashStudio> { scoreSearchMatch(it.name, emptyList(), q) }
@@ -958,28 +1017,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             selectedStudio = sorted.firstOrNull(),
                             sortMode = _stashSortMode.value
                         )
-                        _isStashLoadingEntities.value = false
-                        if (sorted.isNotEmpty()) selectStashStudio(sorted.first(), apiKey)
+                        if (sorted.isNotEmpty()) {
+                            _isStashLoadingScenes.value = true
+                            _isStashLoadingEntities.value = false
+                            selectStashStudio(sorted.first(), effectiveApiKey, forceReload = true)
+                        } else {
+                            _isStashLoadingEntities.value = false
+                        }
                     }.onFailure { err ->
                         _stashSearchError.value = err.message ?: "Failed to search studios"
                         _isStashLoadingEntities.value = false
+                        syncCurrentTabToCache()
                     }
                 }
                 StashSearchType.SEXMEX -> {
                     try {
                         val result = com.example.network.SexMexScraper.searchSexMex(q)
+                        val filtered = applyStudioFilter(result.scenes, settings.value)
+                        val hasMore = result.scenes.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                        currentSexMexNextPageUrl = result.nextPageUrl
                         _stashPerformerResults.value = result.models
                         _stashSelectedPerformer.value = result.models.firstOrNull()
-                        _stashScenesList.value = result.scenes
+                        _rawStashScenesList.value = result.scenes
+                        _stashScenesList.value = filtered
                         _stashTotalScenesCount.value = result.scenes.size
                         _stashCurrentPage.value = 1
-                        _stashCanLoadMore.value = false
+                        _stashCanLoadMore.value = hasMore
                         stashTabCacheMap[StashSearchType.SEXMEX] = StashTabCache(
                             query = q,
                             performerResults = result.models,
                             selectedPerformer = result.models.firstOrNull(),
-                            scenes = result.scenes,
-                            totalCount = result.scenes.size
+                            scenes = filtered,
+                            rawScenes = result.scenes,
+                            totalCount = result.scenes.size,
+                            currentPage = 1,
+                            canLoadMore = hasMore,
+                            sexMexNextPageUrl = result.nextPageUrl
                         )
                         _isStashLoadingEntities.value = false
                         _isStashLoadingScenes.value = false
@@ -1011,24 +1084,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun exploreLatestSexMex() {
         stashSearchJob?.cancel()
         stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingEntities.value = false
+        _isStashLoadingMore.value = false
         stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingScenes.value = true
             _stashSearchError.value = null
             _stashPerformerResults.value = emptyList()
             _stashSelectedPerformer.value = null
             _stashSelectedSceneIds.value = emptySet()
-            _stashScenesList.value = emptyList()
             _stashCurrentPage.value = 1
             _stashCanLoadMore.value = false
+            currentSexMexNextPageUrl = null
             _stashSearchQuery.value = ""
             try {
-                val latest = com.example.network.SexMexScraper.getLatestSexMexScenes()
-                _stashScenesList.value = latest
+                val pageResult = com.example.network.SexMexScraper.getLatestSexMexScenesWithPagination()
+                val latest = pageResult.scenes
+                val filtered = applyStudioFilter(latest, settings.value)
+                val hasMore = latest.isNotEmpty() && !pageResult.nextPageUrl.isNullOrBlank()
+                currentSexMexNextPageUrl = pageResult.nextPageUrl
+                _rawStashScenesList.value = latest
+                _stashScenesList.value = filtered
                 _stashTotalScenesCount.value = latest.size
-                stashTabCacheMap[StashSearchType.SEXMEX] = StashTabCache(scenes = latest, totalCount = latest.size)
+                _stashCanLoadMore.value = hasMore
+                stashTabCacheMap[StashSearchType.SEXMEX] = StashTabCache(
+                    scenes = filtered,
+                    rawScenes = latest,
+                    totalCount = latest.size,
+                    currentPage = 1,
+                    canLoadMore = hasMore,
+                    sexMexNextPageUrl = pageResult.nextPageUrl
+                )
                 _isStashLoadingScenes.value = false
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
                 _stashSearchError.value = e.message ?: "Failed to fetch latest SexMex scenes"
                 _isStashLoadingScenes.value = false
             }
@@ -1065,28 +1156,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun isStudioBlocked(studioId: String?, studioName: String?): Boolean {
-        val current = settings.value
-        if (!current.enableStudioFilter) return false
+    fun isStudioBlocked(
+        studioId: String?,
+        studioName: String?,
+        currentSettings: SettingsEntity = settings.value
+    ): Boolean {
+        if (!currentSettings.enableStudioFilter) return false
         val sName = studioName?.trim()
         val sId = studioId?.trim()
-        if (!sId.isNullOrBlank() && current.blockedStudioIds.contains(sId)) return true
-        if (!sName.isNullOrBlank() && current.blockedStudioNames.any { it.equals(sName, ignoreCase = true) }) return true
+        if (!sName.isNullOrBlank()) {
+            if (!sId.isNullOrBlank()) {
+                blockedStudioNameIdMap[sName.lowercase()] = sId
+            }
+            if (currentSettings.blockedStudioNames.any { it.equals(sName, ignoreCase = true) }) return true
+        }
+        if (!sId.isNullOrBlank() && currentSettings.blockedStudioIds.contains(sId)) {
+            return true
+        }
         return false
+    }
+
+    private fun applyStudioFilter(
+        rawScenes: List<StashScene>,
+        currentSettings: SettingsEntity = settings.value
+    ): List<StashScene> {
+        rawScenes.forEach { scene ->
+            val sName = scene.studioName?.trim()
+            val sId = scene.studioId?.trim()
+            if (!sName.isNullOrBlank() && !sId.isNullOrBlank()) {
+                blockedStudioNameIdMap[sName.lowercase()] = sId
+            }
+            val pName = scene.parentStudioName?.trim()
+            val pId = scene.parentStudioId?.trim()
+            if (!pName.isNullOrBlank() && !pId.isNullOrBlank()) {
+                blockedStudioNameIdMap[pName.lowercase()] = pId
+            }
+        }
+        return if (currentSettings.enableStudioFilter) {
+            rawScenes.filterNot { scene ->
+                isStudioBlocked(scene.studioId, scene.studioName, currentSettings) ||
+                    isStudioBlocked(scene.parentStudioId, scene.parentStudioName, currentSettings)
+            }.distinctBy { it.id }
+        } else {
+            rawScenes.distinctBy { it.id }
+        }
+    }
+
+    private fun refreshStashScenesFilter(currentSettings: SettingsEntity = settings.value) {
+        val raw = _rawStashScenesList.value
+        if (raw.isNotEmpty() || _stashScenesList.value.isNotEmpty()) {
+            val filtered = applyStudioFilter(raw, currentSettings)
+            _stashScenesList.value = filtered
+            val visibleIds = filtered.map { it.id }.toSet()
+            if (_stashSelectedSceneIds.value.isNotEmpty()) {
+                _stashSelectedSceneIds.value = _stashSelectedSceneIds.value.intersect(visibleIds)
+            }
+        }
+        stashTabCacheMap.entries.forEach { (type, cached) ->
+            val tabRaw = cached.rawScenes.ifEmpty { cached.scenes }
+            if (tabRaw.isNotEmpty()) {
+                stashTabCacheMap[type] = cached.copy(
+                    scenes = applyStudioFilter(tabRaw, currentSettings),
+                    rawScenes = tabRaw
+                )
+            }
+        }
     }
 
     fun blockStudio(studioId: String?, studioName: String?) {
         val name = studioName?.trim() ?: return
         if (name.isBlank()) return
+        val sId = studioId?.trim()?.takeIf { it.isNotBlank() }
+        if (sId != null) {
+            blockedStudioNameIdMap[name.lowercase()] = sId
+        }
         val current = settings.value
         val updatedNames = (current.blockedStudioNames + name).distinct()
-        val updatedIds = if (!studioId.isNullOrBlank()) (current.blockedStudioIds + studioId.trim()).distinct() else current.blockedStudioIds
-        updateSettings(current.copy(blockedStudioNames = updatedNames, blockedStudioIds = updatedIds))
-
-        _stashScenesList.value = _stashScenesList.value.filterNot { scene ->
-            (scene.studioId != null && updatedIds.contains(scene.studioId)) ||
-            (scene.studioName != null && updatedNames.any { it.equals(scene.studioName.trim(), ignoreCase = true) })
-        }
+        val updatedIds = if (sId != null) (current.blockedStudioIds + sId).distinct() else current.blockedStudioIds
+        val updatedSettings = current.copy(blockedStudioNames = updatedNames, blockedStudioIds = updatedIds)
+        updateSettings(updatedSettings)
+        refreshStashScenesFilter(updatedSettings)
     }
 
     fun unblockStudio(studioName: String) {
@@ -1094,36 +1243,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = settings.value
         val updatedNames = current.blockedStudioNames.filterNot { it.equals(name, ignoreCase = true) }
         val allStudiosList = allStudios.value
-        val unblockedIds = allStudiosList.filter { it.name.trim().equals(name, ignoreCase = true) }.map { it.id }.toSet()
+        val unblockedIds = mutableSetOf<String>()
+        blockedStudioNameIdMap.remove(name.lowercase())?.let { unblockedIds.add(it) }
+        allStudiosList.filter { it.name.trim().equals(name, ignoreCase = true) }.forEach { studio ->
+            unblockedIds.add(studio.id)
+            studio.stashDbId?.let { unblockedIds.add(it) }
+        }
+        _rawStashScenesList.value.filter { it.studioName?.trim().equals(name, ignoreCase = true) }.forEach { scene ->
+            scene.studioId?.let { unblockedIds.add(it) }
+        }
         val updatedIds = current.blockedStudioIds.filterNot { it in unblockedIds }
-        updateSettings(current.copy(blockedStudioNames = updatedNames, blockedStudioIds = updatedIds))
+        val updatedSettings = current.copy(blockedStudioNames = updatedNames, blockedStudioIds = updatedIds)
+        updateSettings(updatedSettings)
+        refreshStashScenesFilter(updatedSettings)
     }
 
     fun clearAllBlockedStudios() {
         val current = settings.value
-        updateSettings(current.copy(blockedStudioNames = emptyList(), blockedStudioIds = emptyList()))
+        blockedStudioNameIdMap.clear()
+        val updatedSettings = current.copy(blockedStudioNames = emptyList(), blockedStudioIds = emptyList())
+        updateSettings(updatedSettings)
+        refreshStashScenesFilter(updatedSettings)
     }
 
-    fun selectStashPerformer(performer: StashPerformer, apiKey: String) {
+    fun selectStashPerformer(performer: StashPerformer, apiKey: String, forceReload: Boolean = false) {
+        if (!forceReload &&
+            _stashSelectedPerformer.value?.id == performer.id &&
+            _stashSearchError.value == null &&
+            (_isStashLoadingScenes.value || _rawStashScenesList.value.isNotEmpty())
+        ) {
+            return
+        }
+
         _stashSelectedPerformer.value = performer
         _stashSelectedStudio.value = null
         _stashSelectedSceneIds.value = emptySet()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        _isStashLoadingScenes.value = true
+        _stashCurrentPage.value = 1
+        _stashSearchError.value = null
 
         if (_stashActiveType.value == StashSearchType.SEXMEX) {
             stashScenesJob?.cancel()
             stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
-                _isStashLoadingScenes.value = true
-                _stashCurrentPage.value = 1
-                _stashScenesList.value = emptyList()
-                _stashSearchError.value = null
+                currentSexMexNextPageUrl = null
                 try {
-                    val scenes = com.example.network.SexMexScraper.scrapeSexMexPage(performer.id)
+                    val pageResult = com.example.network.SexMexScraper.scrapeSexMexPageWithPagination(performer.id)
+                    val scenes = pageResult.scenes
+                    val filtered = applyStudioFilter(scenes, settings.value)
+                    val hasMore = scenes.isNotEmpty() && !pageResult.nextPageUrl.isNullOrBlank()
+                    currentSexMexNextPageUrl = pageResult.nextPageUrl
                     _stashTotalScenesCount.value = scenes.size
-                    _stashScenesList.value = scenes
-                    _stashCanLoadMore.value = false
+                    _rawStashScenesList.value = scenes
+                    _stashScenesList.value = filtered
+                    _stashCanLoadMore.value = hasMore
+                    syncCurrentTabToCache()
                     _isStashLoadingScenes.value = false
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
+                    _rawStashScenesList.value = emptyList()
+                    _stashScenesList.value = emptyList()
                     _stashSearchError.value = e.message ?: "Failed to load SexMex scenes"
                     _isStashLoadingScenes.value = false
                 }
@@ -1136,11 +1316,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         stashScenesJob?.cancel()
         stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
-            _isStashLoadingScenes.value = true
-            _stashCurrentPage.value = 1
-            _stashScenesList.value = emptyList()
-            _stashSearchError.value = null
-
             val res = StashDbApiService.queryPerformerScenes(
                 performerId = performer.id,
                 apiKey = effectiveApiKey,
@@ -1150,35 +1325,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sortMode = activeSort
             )
             res.onSuccess { queryResult ->
-                val currentSettings = settings.value
-                val filteredScenes = if (currentSettings.enableStudioFilter) {
-                    queryResult.scenes.filterNot { isStudioBlocked(it.studioId, it.studioName) }
-                } else queryResult.scenes
-                _stashTotalScenesCount.value = queryResult.count
-                _stashScenesList.value = filteredScenes.distinctBy { it.id }
-                _stashCanLoadMore.value = queryResult.scenes.isNotEmpty() && (1 * 30 < queryResult.count)
+                var currentPage = 1
+                var totalCount = queryResult.count
+                var accumulatedRaw = queryResult.scenes.distinctBy { it.id }
+                var filteredScenes = applyStudioFilter(accumulatedRaw, settings.value)
+                var canMore = queryResult.scenes.isNotEmpty() && (currentPage * 30 < totalCount)
+
+                var autoPagesFetched = 0
+                while (filteredScenes.size < 6 && canMore && autoPagesFetched < 2) {
+                    ensureActive()
+                    val nextP = currentPage + 1
+                    val nextRes = StashDbApiService.queryPerformerScenes(
+                        performerId = performer.id,
+                        apiKey = effectiveApiKey,
+                        page = nextP,
+                        perPage = 30,
+                        blockMalePerformers = settings.value.blockMalePerformers,
+                        sortMode = activeSort
+                    )
+                    val nextData = nextRes.getOrNull() ?: break
+                    currentPage = nextP
+                    autoPagesFetched++
+                    totalCount = nextData.count
+                    accumulatedRaw = (accumulatedRaw + nextData.scenes).distinctBy { it.id }
+                    filteredScenes = applyStudioFilter(accumulatedRaw, settings.value)
+                    canMore = nextData.scenes.isNotEmpty() && (currentPage * 30 < totalCount)
+                }
+
+                _stashCurrentPage.value = currentPage
+                _stashTotalScenesCount.value = totalCount
+                _rawStashScenesList.value = accumulatedRaw
+                _stashScenesList.value = filteredScenes
+                _stashCanLoadMore.value = canMore
+                syncCurrentTabToCache()
                 _isStashLoadingScenes.value = false
             }.onFailure { err ->
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
                 _stashSearchError.value = err.message ?: "Failed to load scenes"
                 _isStashLoadingScenes.value = false
+                syncCurrentTabToCache()
             }
         }
     }
 
-    fun selectStashStudio(studio: StashStudio, apiKey: String) {
+    fun selectStashStudio(studio: StashStudio, apiKey: String, forceReload: Boolean = false) {
+        if (!forceReload &&
+            _stashSelectedStudio.value?.id == studio.id &&
+            _stashSearchError.value == null &&
+            (_isStashLoadingScenes.value || _rawStashScenesList.value.isNotEmpty())
+        ) {
+            return
+        }
+
         _stashSelectedStudio.value = studio
         _stashSelectedPerformer.value = null
         _stashSelectedSceneIds.value = emptySet()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        _isStashLoadingScenes.value = true
+        _stashCurrentPage.value = 1
+        _stashSearchError.value = null
         val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
         val activeSort = _stashSortMode.value
 
         stashScenesJob?.cancel()
         stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
-            _isStashLoadingScenes.value = true
-            _stashCurrentPage.value = 1
-            _stashScenesList.value = emptyList()
-            _stashSearchError.value = null
-
             val res = StashDbApiService.queryStudioScenes(
                 studioId = studio.id,
                 apiKey = effectiveApiKey,
@@ -1189,35 +1401,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sortMode = activeSort
             )
             res.onSuccess { queryResult ->
-                val currentSettings = settings.value
-                val filteredScenes = if (currentSettings.enableStudioFilter) {
-                    queryResult.scenes.filterNot { isStudioBlocked(it.studioId, it.studioName) }
-                } else queryResult.scenes
-                _stashTotalScenesCount.value = queryResult.count
-                _stashScenesList.value = filteredScenes.distinctBy { it.id }
-                _stashCanLoadMore.value = queryResult.scenes.isNotEmpty() && (1 * 30 < queryResult.count)
+                var currentPage = 1
+                var totalCount = queryResult.count
+                var accumulatedRaw = queryResult.scenes.distinctBy { it.id }
+                var filteredScenes = applyStudioFilter(accumulatedRaw, settings.value)
+                var canMore = queryResult.scenes.isNotEmpty() && (currentPage * 30 < totalCount)
+
+                var autoPagesFetched = 0
+                while (filteredScenes.size < 6 && canMore && autoPagesFetched < 2) {
+                    ensureActive()
+                    val nextP = currentPage + 1
+                    val nextRes = StashDbApiService.queryStudioScenes(
+                        studioId = studio.id,
+                        apiKey = effectiveApiKey,
+                        page = nextP,
+                        perPage = 30,
+                        providedChildIds = studio.childIds,
+                        blockMalePerformers = settings.value.blockMalePerformers,
+                        sortMode = activeSort
+                    )
+                    val nextData = nextRes.getOrNull() ?: break
+                    currentPage = nextP
+                    autoPagesFetched++
+                    totalCount = nextData.count
+                    accumulatedRaw = (accumulatedRaw + nextData.scenes).distinctBy { it.id }
+                    filteredScenes = applyStudioFilter(accumulatedRaw, settings.value)
+                    canMore = nextData.scenes.isNotEmpty() && (currentPage * 30 < totalCount)
+                }
+
+                _stashCurrentPage.value = currentPage
+                _stashTotalScenesCount.value = totalCount
+                _rawStashScenesList.value = accumulatedRaw
+                _stashScenesList.value = filteredScenes
+                _stashCanLoadMore.value = canMore
+                syncCurrentTabToCache()
                 _isStashLoadingScenes.value = false
             }.onFailure { err ->
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
                 _stashSearchError.value = err.message ?: "Failed to load studio scenes"
                 _isStashLoadingScenes.value = false
+                syncCurrentTabToCache()
             }
         }
     }
 
-    private fun appendStashScenes(newScenes: List<StashScene>, count: Int, page: Int) {
+    private fun appendStashScenes(newScenes: List<StashScene>, count: Int, page: Int): Int {
         _stashCurrentPage.value = page
-        val current = _stashScenesList.value
-        val currentSettings = settings.value
-        val filtered = if (currentSettings.enableStudioFilter) {
-            newScenes.filterNot { isStudioBlocked(it.studioId, it.studioName) }
-        } else newScenes
-        val existingIds = current.map { it.id }.toSet()
-        _stashScenesList.value = current + filtered.filter { it.id !in existingIds }
+        val previousVisibleCount = _stashScenesList.value.size
+        val updatedRaw = (_rawStashScenesList.value + newScenes).distinctBy { it.id }
+        _rawStashScenesList.value = updatedRaw
+        val updatedFiltered = applyStudioFilter(updatedRaw, settings.value)
+        _stashScenesList.value = updatedFiltered
+        _stashTotalScenesCount.value = count
         _stashCanLoadMore.value = newScenes.isNotEmpty() && (page * 30 < count)
+        syncCurrentTabToCache()
+        return (updatedFiltered.size - previousVisibleCount).coerceAtLeast(0)
     }
 
     fun loadMoreStashScenes(apiKey: String) {
-        if (_isStashLoadingMore.value || !_stashCanLoadMore.value) return
+        if (_isStashLoadingMore.value || _isStashLoadingScenes.value || !_stashCanLoadMore.value) return
         val currentType = _stashActiveType.value
         val selectedPerf = _stashSelectedPerformer.value
         val selectedStud = _stashSelectedStudio.value
@@ -1226,46 +1469,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         if (currentType == StashSearchType.ACTORS && selectedPerf == null) return
         if (currentType == StashSearchType.STUDIO && selectedStud == null) return
-        if (currentType == StashSearchType.SEXMEX) return
+        if (currentType == StashSearchType.SEXMEX && currentSexMexNextPageUrl.isNullOrBlank()) return
 
-        val nextPage = _stashCurrentPage.value + 1
-
-        viewModelScope.launch(Dispatchers.IO) {
+        stashLoadMoreJob?.cancel()
+        stashLoadMoreJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingMore.value = true
+            try {
+                var nextPage = _stashCurrentPage.value + 1
+                var pagesAttempted = 0
+                var addedVisible = 0
 
-            if (currentType == StashSearchType.ACTORS && selectedPerf != null) {
-                val res = StashDbApiService.queryPerformerScenes(
-                    performerId = selectedPerf.id,
-                    apiKey = effectiveApiKey,
-                    page = nextPage,
-                    perPage = 30,
-                    blockMalePerformers = settings.value.blockMalePerformers,
-                    sortMode = activeSort
-                )
-                res.onSuccess { queryResult ->
-                    appendStashScenes(queryResult.scenes, queryResult.count, nextPage)
-                }.onFailure { err ->
-                    _stashSearchError.value = err.message ?: "Failed to load more scenes"
-                    _stashCanLoadMore.value = false
+                while (pagesAttempted < 3 && addedVisible == 0) {
+                    ensureActive()
+                    pagesAttempted++
+                    if (currentType == StashSearchType.ACTORS && selectedPerf != null) {
+                        val res = StashDbApiService.queryPerformerScenes(
+                            performerId = selectedPerf.id,
+                            apiKey = effectiveApiKey,
+                            page = nextPage,
+                            perPage = 30,
+                            blockMalePerformers = settings.value.blockMalePerformers,
+                            sortMode = activeSort
+                        )
+                        var shouldContinue = false
+                        res.onSuccess { queryResult ->
+                            addedVisible += appendStashScenes(queryResult.scenes, queryResult.count, nextPage)
+                            shouldContinue = _stashCanLoadMore.value
+                        }.onFailure {
+                            shouldContinue = false
+                        }
+                        if (!shouldContinue) break
+                    } else if (currentType == StashSearchType.STUDIO && selectedStud != null) {
+                        val res = StashDbApiService.queryStudioScenes(
+                            studioId = selectedStud.id,
+                            apiKey = effectiveApiKey,
+                            page = nextPage,
+                            perPage = 30,
+                            providedChildIds = selectedStud.childIds,
+                            blockMalePerformers = settings.value.blockMalePerformers,
+                            sortMode = activeSort
+                        )
+                        var shouldContinue = false
+                        res.onSuccess { queryResult ->
+                            addedVisible += appendStashScenes(queryResult.scenes, queryResult.count, nextPage)
+                            shouldContinue = _stashCanLoadMore.value
+                        }.onFailure {
+                            shouldContinue = false
+                        }
+                        if (!shouldContinue) break
+                    } else if (currentType == StashSearchType.SEXMEX) {
+                        val targetUrl = currentSexMexNextPageUrl ?: break
+                        val pageResult = com.example.network.SexMexScraper.scrapeSexMexPageWithPagination(targetUrl)
+                        if (pageResult.scenes.isEmpty()) {
+                            currentSexMexNextPageUrl = null
+                            _stashCanLoadMore.value = false
+                            syncCurrentTabToCache()
+                            break
+                        }
+                        currentSexMexNextPageUrl = pageResult.nextPageUrl
+                        _stashCurrentPage.value = nextPage
+                        val previousVisibleCount = _stashScenesList.value.size
+                        val updatedRaw = (_rawStashScenesList.value + pageResult.scenes).distinctBy { it.id }
+                        _rawStashScenesList.value = updatedRaw
+                        val updatedFiltered = applyStudioFilter(updatedRaw, settings.value)
+                        _stashScenesList.value = updatedFiltered
+                        _stashTotalScenesCount.value = updatedRaw.size
+                        val hasMore = !pageResult.nextPageUrl.isNullOrBlank() && updatedRaw.size > previousVisibleCount
+                        _stashCanLoadMore.value = hasMore
+                        syncCurrentTabToCache()
+                        addedVisible += (updatedFiltered.size - previousVisibleCount).coerceAtLeast(0)
+                        if (!hasMore) break
+                    } else {
+                        break
+                    }
+                    nextPage = _stashCurrentPage.value + 1
                 }
-            } else if (currentType == StashSearchType.STUDIO && selectedStud != null) {
-                val res = StashDbApiService.queryStudioScenes(
-                    studioId = selectedStud.id,
-                    apiKey = effectiveApiKey,
-                    page = nextPage,
-                    perPage = 30,
-                    providedChildIds = selectedStud.childIds,
-                    blockMalePerformers = settings.value.blockMalePerformers,
-                    sortMode = activeSort
-                )
-                res.onSuccess { queryResult ->
-                    appendStashScenes(queryResult.scenes, queryResult.count, nextPage)
-                }.onFailure { err ->
-                    _stashSearchError.value = err.message ?: "Failed to load more studio scenes"
-                    _stashCanLoadMore.value = false
-                }
+            } finally {
+                _isStashLoadingMore.value = false
             }
-            _isStashLoadingMore.value = false
         }
     }
 
@@ -1353,9 +1634,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     for (perf in sortedPerformers) {
                         val pName = perf.name.trim()
                         if (pName.isBlank()) continue
+                        val validPerformerStashId = perf.id.takeIf {
+                            !it.startsWith("sexmex:", ignoreCase = true) && !it.startsWith("http", ignoreCase = true)
+                        }
 
                         val existing = allExistingActors.find {
-                            (it.stashDbId != null && it.stashDbId == perf.id) ||
+                            (validPerformerStashId != null && it.stashDbId == validPerformerStashId) ||
                             it.name.trim().equals(pName, ignoreCase = true)
                         }
 
@@ -1366,7 +1650,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val newActorId = UUID.randomUUID().toString()
                             val actor = ActorEntity(
                                 id = newActorId,
-                                stashDbId = perf.id,
+                                stashDbId = validPerformerStashId,
                                 name = perf.name,
                                 imageUrl = perf.imageUrl ?: "",
                                 originalImageUrl = perf.imageUrl
@@ -1384,8 +1668,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     if (!scene.studioName.isNullOrBlank()) {
                         val sName = scene.studioName.trim()
+                        val validStudioStashId = scene.studioId?.takeIf {
+                            !it.equals("sexmex", ignoreCase = true) && !it.startsWith("http", ignoreCase = true)
+                        }
                         val existingStudio = allExistingStudios.find {
-                            (scene.studioId != null && it.stashDbId == scene.studioId) ||
+                            (validStudioStashId != null && it.stashDbId == validStudioStashId) ||
                             it.name.trim().equals(sName, ignoreCase = true)
                         }
 
@@ -1396,7 +1683,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val newStudioId = UUID.randomUUID().toString()
                             val studio = StudioEntity(
                                 id = newStudioId,
-                                stashDbId = scene.studioId,
+                                stashDbId = validStudioStashId,
                                 name = scene.studioName,
                                 logoUrl = scene.studioLogo,
                                 imageUrl = scene.studioLogo
@@ -1544,7 +1831,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsEntity())
 
     init {
-        // Monitor settings to lock app on startup if passcode protection is active
+        // Monitor settings to lock app on startup if passcode protection is active and reactively apply StashDB studio filter
         viewModelScope.launch {
             settings.collect { currentSettings ->
                 if (currentSettings.isPasscodeEnabled && currentSettings.passcodeHash.isNotBlank()) {
@@ -1554,6 +1841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else if (!currentSettings.isPasscodeEnabled) {
                     _isAppLocked.value = false
                 }
+                refreshStashScenesFilter(currentSettings)
             }
         }
     }
@@ -1648,6 +1936,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSettings(newSettings: SettingsEntity) {
+        val prev = settings.value
+        if (prev == null ||
+            prev.realDebridApiKey != newSettings.realDebridApiKey ||
+            prev.torboxApiKey != newSettings.torboxApiKey ||
+            prev.debridOrder != newSettings.debridOrder
+        ) {
+            com.example.network.debrid.DebridManager.clearAllCaches()
+        }
         viewModelScope.launch { repository.updateSettings(newSettings) }
     }
 
@@ -2491,9 +2787,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val resolved = com.example.network.kstreamScraper.resolveStream(episode.episodeUrl)
                 if (resolved != null && resolved.qualities.isNotEmpty()) {
                     val streamTitle = if (resolved.title.isNotBlank()) resolved.title else episode.title
+                    val cleanEpisodeQualities = normalizeAndSortQualities(resolved.qualities)
+                    withContext(Dispatchers.Main) {
+                        com.example.ui.components.PlayerSessionTracker.clearSession(sharedPlayerManager.getPlayer())
+                    }
                     _activeVideo.value = ActiveVideoPlayback(
                         title = streamTitle,
-                        qualities = resolved.qualities,
+                        qualities = cleanEpisodeQualities,
                         subtitles = resolved.subtitles,
                         headers = mapOf(
                             "Referer" to "https://hstream.moe/",
@@ -2509,6 +2809,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _videoResolutionError.value = e.message ?: "Failed to extract video stream."
             } finally {
                 _resolvingVideoStatus.value = null
+            }
+        }
+    }
+
+    private fun normalizeAndSortQualities(rawQualities: List<StreamQuality>): List<StreamQuality> {
+        if (rawQualities.isEmpty()) return emptyList()
+
+        val mapped = rawQualities.mapNotNull { q ->
+            val tierLabel = com.example.ui.components.resolveAllowedQualityLabel(q.quality, q.url)
+            if (tierLabel != null) {
+                q.copy(quality = tierLabel)
+            } else {
+                null
+            }
+        }
+
+        val candidates = if (mapped.isNotEmpty()) {
+            mapped
+        } else {
+            val bestFallback = rawQualities.firstOrNull { it.isDefault } ?: rawQualities.first()
+            listOf(bestFallback.copy(quality = "720p", isDefault = true))
+        }
+
+        val deduplicated = candidates
+            .groupBy { it.quality }
+            .map { (tierLabel, group) ->
+                val hasDefault = group.any { it.isDefault }
+                val primary = group.firstOrNull { it.isDefault } ?: group.first()
+                primary.copy(quality = tierLabel, isDefault = hasDefault)
+            }
+            .sortedByDescending { q ->
+                when (q.quality) {
+                    "VR 360" -> 2880
+                    "2160p" -> 2160
+                    "1440p" -> 1440
+                    "1080p" -> 1080
+                    "720p" -> 720
+                    else -> 0
+                }
+            }
+
+        return if (deduplicated.any { it.isDefault }) {
+            deduplicated
+        } else {
+            val targetDefaultIdx = deduplicated.indexOfFirst { !it.quality.contains("vr", ignoreCase = true) }
+                .let { if (it != -1) it else 0 }
+            deduplicated.mapIndexed { index, item ->
+                if (index == targetDefaultIdx) item.copy(isDefault = true) else item
             }
         }
     }

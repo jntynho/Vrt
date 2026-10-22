@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
 import com.example.network.StashPerformer
 import com.example.network.StashStudio
 import com.example.ui.StashSearchType
@@ -59,6 +60,7 @@ fun HorizontalActorCircleItem(
 ) {
     val palette = LocalVaultPalette.current
     val accent = LocalAccentColor.current
+    val context = LocalContext.current
 
     val posX = actorEntity?.imagePositionX ?: 50f
     val posY = actorEntity?.imagePositionY ?: 0f
@@ -74,6 +76,20 @@ fun HorizontalActorCircleItem(
     )
 
     val isBetaTest = LocalBetaTestPrivacy.current
+
+    val imageRequest = remember(performer.imageUrl) {
+        if (!performer.imageUrl.isNullOrBlank()) {
+            ImageRequest.Builder(context)
+                .data(performer.imageUrl)
+                .memoryCacheKey(performer.imageUrl)
+                .diskCacheKey(performer.imageUrl)
+                .size(200, 200)
+                .precision(Precision.INEXACT)
+                .allowHardware(true)
+                .crossfade(180)
+                .build()
+        } else null
+    }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -105,12 +121,12 @@ fun HorizontalActorCircleItem(
                 .background(palette.cardBg),
             contentAlignment = Alignment.Center
         ) {
-            if (!performer.imageUrl.isNullOrBlank()) {
+            if (imageRequest != null) {
                 val z = zoom.coerceIn(1f, 3f)
                 val biasX = (posX.coerceIn(0f, 100f) - 50f) / 50f
                 val biasY = (posY.coerceIn(0f, 100f) - 50f) / 50f
                 AsyncImage(
-                    model = performer.imageUrl,
+                    model = imageRequest,
                     contentDescription = performer.name,
                     contentScale = ContentScale.Crop,
                     alignment = BiasAlignment(biasX, biasY),
@@ -189,7 +205,12 @@ fun HorizontalStudioCircleItem(
         if (!formattedLogoUrl.isNullOrBlank()) {
             ImageRequest.Builder(context)
                 .data(formattedLogoUrl)
-                .crossfade(true)
+                .memoryCacheKey(formattedLogoUrl)
+                .diskCacheKey(formattedLogoUrl)
+                .size(200, 200)
+                .precision(Precision.INEXACT)
+                .allowHardware(true)
+                .crossfade(180)
                 .build()
         } else null
     }

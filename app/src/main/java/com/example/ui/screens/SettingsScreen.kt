@@ -55,12 +55,28 @@ fun SettingsScreen(
     val currentSettingsRaw by viewModel.settings.collectAsStateWithLifecycle()
     val currentSettings = currentSettingsRaw ?: SettingsEntity()
 
-    var themeName by remember(currentSettings) { mutableStateOf(currentSettings.currentTheme) }
-    var accentHex by remember(currentSettings) { mutableStateOf(currentSettings.accentColorHex) }
-    var torboxKey by remember(currentSettings) { mutableStateOf(currentSettings.torboxApiKey) }
-    var rdKey by remember(currentSettings) { mutableStateOf(currentSettings.realDebridApiKey) }
-    var stashDbKey by remember(currentSettings) { mutableStateOf(currentSettings.stashDbApiKey) }
+    var themeName by remember(currentSettings.currentTheme) { mutableStateOf(currentSettings.currentTheme) }
+    var accentHex by remember(currentSettings.accentColorHex) { mutableStateOf(currentSettings.accentColorHex) }
+    var torboxKey by remember { mutableStateOf(currentSettings.torboxApiKey) }
+    var rdKey by remember { mutableStateOf(currentSettings.realDebridApiKey) }
+    var stashDbKey by remember { mutableStateOf(currentSettings.stashDbApiKey) }
     var showStashDbKey by remember { mutableStateOf(false) }
+
+    LaunchedEffect(currentSettings.torboxApiKey) {
+        if (torboxKey.isBlank() && currentSettings.torboxApiKey.isNotBlank()) {
+            torboxKey = currentSettings.torboxApiKey
+        }
+    }
+    LaunchedEffect(currentSettings.realDebridApiKey) {
+        if (rdKey.isBlank() && currentSettings.realDebridApiKey.isNotBlank()) {
+            rdKey = currentSettings.realDebridApiKey
+        }
+    }
+    LaunchedEffect(currentSettings.stashDbApiKey) {
+        if (stashDbKey.isBlank() && currentSettings.stashDbApiKey.isNotBlank()) {
+            stashDbKey = currentSettings.stashDbApiKey
+        }
+    }
 
     var sampleDataStatus by remember { mutableStateOf("") }
     val initialSection = remember {

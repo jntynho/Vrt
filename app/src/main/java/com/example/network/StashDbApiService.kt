@@ -1,16 +1,20 @@
 package com.example.network
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 
 data class StashPerformer(
     val id: String,
@@ -39,6 +43,8 @@ data class StashScene(
     val studioId: String? = null,
     val studioName: String? = null,
     val studioLogo: String? = null,
+    val parentStudioId: String? = null,
+    val parentStudioName: String? = null,
     val coverUrl: String? = null,
     val femalePerformers: List<StashPerformer> = emptyList()
 )
@@ -65,6 +71,7 @@ enum class StashSceneSortMode(
 object StashDbApiService {
     private const val GRAPHQL_ENDPOINT = "https://stashdb.org/graphql"
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    private val studioHierarchyCache = ConcurrentHashMap<String, List<String>>()
 
     private const val SCENE_QUERY = """
         query QueryScenes(${'$'}input: SceneQueryInput!) {
@@ -149,6 +156,9 @@ object StashDbApiService {
             child_studios {
               id
               name
+              child_studios {
+                id
+              }
             }
           }
         }
@@ -170,6 +180,9 @@ object StashDbApiService {
             child_studios {
               id
               name
+              child_studios {
+                id
+              }
             }
           }
         }
@@ -196,15 +209,27 @@ object StashDbApiService {
         "yyyy"
     )
 
+    private val parsedDateCache = ConcurrentHashMap<String, Long>()
+    private const val INVALID_DATE_SENTINEL = Long.MIN_VALUE
+
     fun parseDateToMillis(dateStr: String?): Long? {
         if (dateStr.isNullOrBlank()) return null
         val clean = dateStr.trim()
+        parsedDateCache[clean]?.let { cached ->
+            return if (cached == INVALID_DATE_SENTINEL) null else cached
+        }
+
         if (clean.length == 10 && clean[4] == '-' && clean[7] == '-') {
             try {
                 val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
-                return sdf.parse(clean)?.time
+                val millis = sdf.parse(clean)?.time
+                if (millis != null) {
+                    if (parsedDateCache.size > 4000) parsedDateCache.clear()
+                    parsedDateCache[clean] = millis
+                    return millis
+                }
             } catch (_: Exception) {}
         }
         for (fmt in dateFormats) {
@@ -213,9 +238,15 @@ object StashDbApiService {
                     timeZone = TimeZone.getTimeZone("UTC")
                 }
                 val parsed = sdf.parse(clean)
-                if (parsed != null) return parsed.time
+                if (parsed != null) {
+                    if (parsedDateCache.size > 4000) parsedDateCache.clear()
+                    parsedDateCache[clean] = parsed.time
+                    return parsed.time
+                }
             } catch (_: Exception) {}
         }
+        if (parsedDateCache.size > 4000) parsedDateCache.clear()
+        parsedDateCache[clean] = INVALID_DATE_SENTINEL
         return null
     }
 
@@ -282,39 +313,63 @@ object StashDbApiService {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("StashDB API Key is required"))
         }
-        try {
-            val bodyJson = JSONObject().apply {
+        val bodyString = try {
+            JSONObject().apply {
                 put("query", query.trimIndent())
                 put("variables", variables)
-            }
-
-            val request = Request.Builder()
-                .url(GRAPHQL_ENDPOINT)
-                .header("ApiKey", apiKey.trim())
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
-                .build()
-
-            NetworkClient.okHttpClient.newCall(request).execute().use { response ->
-                val rawBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("StashDB Error: HTTP ${response.code}"))
-                }
-
-                val json = JSONObject(rawBody)
-                val errors = json.optJSONArray("errors")
-                if (errors != null && errors.length() > 0) {
-                    val errorMsg = errors.optJSONObject(0)?.optString("message") ?: "GraphQL query error"
-                    return@withContext Result.failure(Exception(errorMsg))
-                }
-
-                val dataObj = json.optJSONObject("data") ?: JSONObject()
-                Result.success(dataObj)
-            }
+            }.toString()
         } catch (e: Exception) {
-            Result.failure(e)
+            return@withContext Result.failure(e)
         }
+
+        var lastException: Exception? = null
+        for (attempt in 0..1) {
+            if (attempt > 0) {
+                delay(350L)
+            }
+            try {
+                val request = Request.Builder()
+                    .url(GRAPHQL_ENDPOINT)
+                    .header("ApiKey", apiKey.trim())
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .post(bodyString.toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
+
+                NetworkClient.okHttpClient.newCall(request).execute().use { response ->
+                    val rawBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        val code = response.code
+                        val httpErr = Exception("StashDB Error: HTTP $code")
+                        if (attempt == 0 && (code == 429 || code == 502 || code == 503 || code == 504)) {
+                            lastException = httpErr
+                        } else {
+                            return@withContext Result.failure(httpErr)
+                        }
+                    } else {
+                        val json = JSONObject(rawBody)
+                        val errors = json.optJSONArray("errors")
+                        if (errors != null && errors.length() > 0) {
+                            val errorMsg = errors.optJSONObject(0)?.optString("message") ?: "GraphQL query error"
+                            return@withContext Result.failure(Exception(errorMsg))
+                        }
+
+                        val dataObj = json.optJSONObject("data") ?: JSONObject()
+                        return@withContext Result.success(dataObj)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                lastException = e
+                if (attempt == 1) {
+                    return@withContext Result.failure(e)
+                }
+            } catch (e: Exception) {
+                return@withContext Result.failure(e)
+            }
+        }
+        Result.failure(lastException ?: Exception("Failed to execute StashDB GraphQL query"))
     }
 
     suspend fun searchPerformers(query: String, apiKey: String, blockMalePerformers: Boolean = true): Result<List<StashPerformer>> {
@@ -409,14 +464,24 @@ object StashDbApiService {
                 val parentName = item.optJSONObject("parent")?.optString("name")?.ifBlank { null }
                 val logoUrl = extractStudioLogo(item)
 
-                val childIds = mutableListOf<String>()
+                val childIds = LinkedHashSet<String>()
                 val childArray = item.optJSONArray("child_studios")
                 if (childArray != null) {
                     for (c in 0 until childArray.length()) {
-                        val cId = childArray.optJSONObject(c)?.optString("id")
-                        if (!cId.isNullOrBlank()) childIds.add(cId)
+                        val childObj = childArray.optJSONObject(c) ?: continue
+                        val cId = childObj.optString("id")
+                        if (cId.isNotBlank()) childIds.add(cId)
+                        val subChildArr = childObj.optJSONArray("child_studios")
+                        if (subChildArr != null) {
+                            for (j in 0 until subChildArr.length()) {
+                                val subId = subChildArr.optJSONObject(j)?.optString("id")
+                                if (!subId.isNullOrBlank()) childIds.add(subId)
+                            }
+                        }
                     }
                 }
+                val childIdList = childIds.toList()
+                studioHierarchyCache[id] = (listOf(id) + childIdList).distinct()
 
                 results.add(
                     StashStudio(
@@ -424,7 +489,7 @@ object StashDbApiService {
                         name = name,
                         parentName = parentName,
                         logoUrl = logoUrl,
-                        childIds = childIds
+                        childIds = childIdList
                     )
                 )
             }
@@ -441,25 +506,36 @@ object StashDbApiService {
         val name = studioObj.optString("name")
         val parentName = studioObj.optJSONObject("parent")?.optString("name")?.ifBlank { null }
         val logoUrl = extractStudioLogo(studioObj)
-        val childIds = mutableListOf<String>()
+        val childIds = LinkedHashSet<String>()
         val childArr = studioObj.optJSONArray("child_studios")
         if (childArr != null) {
             for (i in 0 until childArr.length()) {
-                val cId = childArr.optJSONObject(i)?.optString("id")
-                if (!cId.isNullOrBlank()) childIds.add(cId)
+                val childObj = childArr.optJSONObject(i) ?: continue
+                val cId = childObj.optString("id")
+                if (cId.isNotBlank()) childIds.add(cId)
+                val subChildArr = childObj.optJSONArray("child_studios")
+                if (subChildArr != null) {
+                    for (j in 0 until subChildArr.length()) {
+                        val subId = subChildArr.optJSONObject(j)?.optString("id")
+                        if (!subId.isNullOrBlank()) childIds.add(subId)
+                    }
+                }
             }
         }
+        val childIdList = childIds.toList()
+        studioHierarchyCache[id] = (listOf(id) + childIdList).distinct()
 
         return StashStudio(
             id = id,
             name = name,
             parentName = parentName,
             logoUrl = logoUrl,
-            childIds = childIds
+            childIds = childIdList
         )
     }
 
     private suspend fun fetchStudioHierarchyIds(studioId: String, apiKey: String): List<String> {
+        studioHierarchyCache[studioId]?.let { return it }
         val vars = JSONObject().apply { put("id", studioId) }
         val result = executeGraphQL(STUDIO_HIERARCHY_QUERY, vars, apiKey)
         val studioObj = result.getOrNull()?.optJSONObject("findStudio") ?: return listOf(studioId)
@@ -480,7 +556,7 @@ object StashDbApiService {
                 }
             }
         }
-        return idsList.toList()
+        return idsList.toList().also { studioHierarchyCache[studioId] = it }
     }
 
     private suspend fun queryScenesInternal(
@@ -537,15 +613,17 @@ object StashDbApiService {
         apiKey: String,
         page: Int = 1,
         perPage: Int = 20,
-        providedChildIds: List<String> = emptyList(),
+        providedChildIds: List<String>? = null,
         blockMalePerformers: Boolean = true,
         sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE
     ): Result<StashSceneQueryResult> {
         if (apiKey.isBlank()) return Result.failure(IllegalArgumentException("StashDB API Key is required"))
-        val allStudioIds = if (providedChildIds.isNotEmpty()) {
-            (listOf(studioId) + providedChildIds).distinct()
+        val allStudioIds = if (providedChildIds != null) {
+            (listOf(studioId) + providedChildIds).distinct().also {
+                studioHierarchyCache[studioId] = it
+            }
         } else {
-            fetchStudioHierarchyIds(studioId, apiKey)
+            studioHierarchyCache[studioId] ?: fetchStudioHierarchyIds(studioId, apiKey)
         }
 
         val inputObj = JSONObject().apply {
@@ -583,6 +661,9 @@ object StashDbApiService {
             val studioId = studioObj?.optString("id")?.ifBlank { null }
             val studioName = studioObj?.optString("name")?.ifBlank { null }
             val studioLogo = extractStudioLogo(studioObj)
+            val parentStudioObj = studioObj?.optJSONObject("parent")
+            val parentStudioId = parentStudioObj?.optString("id")?.ifBlank { null }
+            val parentStudioName = parentStudioObj?.optString("name")?.ifBlank { null }
 
             val femalePerformers = mutableListOf<StashPerformer>()
             val performersArray = item.optJSONArray("performers")
@@ -622,6 +703,8 @@ object StashDbApiService {
                     studioId = studioId,
                     studioName = studioName,
                     studioLogo = studioLogo,
+                    parentStudioId = parentStudioId,
+                    parentStudioName = parentStudioName,
                     coverUrl = coverUrl,
                     femalePerformers = femalePerformers
                 )

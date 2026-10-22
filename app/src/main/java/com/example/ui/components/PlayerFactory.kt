@@ -125,17 +125,35 @@ object PlayerFactory {
         headers.forEach { (k, v) ->
             if (!k.equals("User-Agent", ignoreCase = true)) customHeaders[k] = v
         }
+
+        // Bridge session cookies from NetworkClient.inMemoryCookieJar into ExoPlayer requests
+        val hasExplicitCookie = customHeaders.keys.any { it.equals("Cookie", ignoreCase = true) }
+        if (!hasExplicitCookie) {
+            val jarCookies = com.example.network.NetworkClient.getCookieHeader(url)
+            if (!jarCookies.isNullOrBlank()) {
+                customHeaders["Cookie"] = jarCookies
+            }
+        }
+
         if (customHeaders.isNotEmpty()) {
             httpFactory.setDefaultRequestProperties(customHeaders)
         }
 
         val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
 
-        // For large cloud debrid and direct file-hoster streams (Bunkr, Filester, Pixeldrain),
-        // stream directly via upstream factory to preserve session cookies/headers across Range requests
-        // and prevent thrashing the 64MB LRU disk cache.
+        // For large cloud debrid and direct file-hoster streams, stream directly via upstream factory
+        // to preserve session cookies/headers across Range requests and prevent thrashing the 64MB LRU disk cache.
         val isDebridOrDirectCdn = url.contains("real-debrid.com", ignoreCase = true) ||
+            url.contains("rdeb.io", ignoreCase = true) ||
+            url.contains("rdb.so", ignoreCase = true) ||
             url.contains("torbox.app", ignoreCase = true) ||
+            url.contains("tb-cdn.st", ignoreCase = true) ||
+            url.contains("torbox.io", ignoreCase = true) ||
+            url.contains("gofile.io", ignoreCase = true) ||
+            url.contains("cyberfile.me", ignoreCase = true) ||
+            url.contains("phncdn.com", ignoreCase = true) ||
+            url.contains("xhcdn.com", ignoreCase = true) ||
+            url.contains("eporner.com", ignoreCase = true) ||
             url.contains("delivery-", ignoreCase = true) ||
             url.contains("bunkr", ignoreCase = true) ||
             url.contains("filester", ignoreCase = true) ||
@@ -153,12 +171,18 @@ object PlayerFactory {
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         }
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setMp4ExtractorFlags(androidx.media3.extractor.mp4.Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
         val mediaItemBuilder = MediaItem.Builder().setUri(url)
 
         val ext = MediaUrlValidator.mediaExtensionOf(url)
         val resolvedFormat = formatHint?.uppercase()?.trim()
 
+        // Only set explicit adaptive or known container MIME types; let DefaultExtractorsFactory auto-sniff
+        // magic bytes for .mov, .avi, .flv, .wmv, or extensionless progressive streams to prevent parser crashes.
         when {
             ext == "mpd" || url.contains(".mpd", ignoreCase = true) || resolvedFormat == "DASH" ->
                 mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
@@ -168,9 +192,9 @@ object PlayerFactory {
                 mediaItemBuilder.setMimeType(MimeTypes.VIDEO_MATROSKA)
             ext == "webm" || url.contains(".webm", ignoreCase = true) || resolvedFormat == "WEBM" ->
                 mediaItemBuilder.setMimeType(MimeTypes.VIDEO_WEBM)
-            ext == "ts" || url.contains(".ts", ignoreCase = true) ->
+            ext == "ts" || ext == "m2ts" || resolvedFormat == "TS" ->
                 mediaItemBuilder.setMimeType(MimeTypes.VIDEO_MP2T)
-            ext == "mp4" || resolvedFormat == "MP4" ->
+            ext == "mp4" || ext == "m4v" ->
                 mediaItemBuilder.setMimeType(MimeTypes.VIDEO_MP4)
         }
 

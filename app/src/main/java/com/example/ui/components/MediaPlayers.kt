@@ -85,6 +85,7 @@ fun CoreMediaPlayer(
     defaultHeaders: Map<String, String> = emptyMap(),
     initialPositionMs: Long = 0L,
     startInLandscape: Boolean = false,
+    startInVrMode: Boolean = false,
     exoPlayer: ExoPlayer? = null,
     enableGestures: Boolean = true,
     onClose: () -> Unit,
@@ -104,29 +105,49 @@ fun CoreMediaPlayer(
         if (exoPlayer == null) PlayerFactory.createPlayer(context) else null
     }
     val activeExoPlayer = exoPlayer ?: fallbackPlayer ?: remember(context) { PlayerFactory.createPlayer(context) }
+    val playerSession = remember(activeExoPlayer) {
+        PlayerSessionTracker.getOrCreate(activeExoPlayer)
+    }
 
     DisposableEffect(fallbackPlayer) {
         onDispose { fallbackPlayer?.release() }
     }
 
-    var activeQualityIndex by remember(qualities) {
+    var activeQualityIndex by remember(qualities, activeExoPlayer) {
+        val savedUrl = playerSession.selectedQualityUrl
+        val savedIdx = if (!savedUrl.isNullOrBlank()) {
+            qualities.indexOfFirst { it.url == savedUrl }
+        } else -1
         val defaultIdx = qualities.indexOfFirst { it.isDefault }
-        mutableIntStateOf(if (defaultIdx >= 0) defaultIdx else 0)
+        val resolvedIdx = when {
+            savedIdx >= 0 -> savedIdx
+            defaultIdx >= 0 -> defaultIdx
+            else -> 0
+        }
+        playerSession.selectedQualityUrl = qualities.getOrNull(resolvedIdx)?.url
+        mutableIntStateOf(resolvedIdx)
     }
     val primaryQuality = remember(qualities, activeQualityIndex) {
         qualities.getOrNull(activeQualityIndex) ?: qualities.firstOrNull()
     }
 
-    var activeSubtitleIndex by remember(subtitles) {
-        mutableIntStateOf(if (subtitles.isNotEmpty()) 0 else -1)
+    var activeSubtitleIndex by remember(subtitles, activeExoPlayer) {
+        val resolvedSubIdx = if (playerSession.hasUserSelectedSubtitle &&
+            playerSession.selectedSubtitleIndex in -1 until subtitles.size
+        ) {
+            playerSession.selectedSubtitleIndex
+        } else {
+            if (subtitles.isNotEmpty()) 0 else -1
+        }
+        mutableIntStateOf(resolvedSubIdx)
     }
 
-    var subtitleScale by remember { mutableFloatStateOf(1.0f) }
-    var subtitleBottomPadding by remember { mutableFloatStateOf(0.08f) }
-    var subtitleColorFraction by remember { mutableFloatStateOf(0.0f) }
-    var subtitleBgOpacity by remember { mutableFloatStateOf(0.0f) }
-    var subtitleEdgeStyle by remember { mutableStateOf(SubtitleEdgeStyle.OUTLINE) }
-    var subtitleFontFamily by remember { mutableStateOf(SubtitleFontFamily.LEXEND) }
+    var subtitleScale by remember(activeExoPlayer) { mutableFloatStateOf(playerSession.subtitleScale) }
+    var subtitleBottomPadding by remember(activeExoPlayer) { mutableFloatStateOf(playerSession.subtitleBottomPadding) }
+    var subtitleColorFraction by remember(activeExoPlayer) { mutableFloatStateOf(playerSession.subtitleColorFraction) }
+    var subtitleBgOpacity by remember(activeExoPlayer) { mutableFloatStateOf(playerSession.subtitleBgOpacity) }
+    var subtitleEdgeStyle by remember(activeExoPlayer) { mutableStateOf(playerSession.subtitleEdgeStyle) }
+    var subtitleFontFamily by remember(activeExoPlayer) { mutableStateOf(playerSession.subtitleFontFamily) }
 
     val resolvedSubtitleTypeface = remember(context, subtitleFontFamily) {
         val baseTypeface = when (subtitleFontFamily) {
@@ -189,19 +210,17 @@ fun CoreMediaPlayer(
     var isPlaying by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(true) }
     var currentPos by remember {
-        mutableLongStateOf(initialPositionMs.coerceAtLeast(0L))
+        val existingPos = activeExoPlayer.currentPosition.coerceAtLeast(0L)
+        mutableLongStateOf(if (initialPositionMs > 0L) initialPositionMs else existingPos)
     }
-    var duration by remember { mutableLongStateOf(0L) }
-    var bufferedPos by remember { mutableLongStateOf(0L) }
+    var duration by remember {
+        val d = activeExoPlayer.duration
+        mutableLongStateOf(if (d > 0L && d != C.TIME_UNSET) d else 0L)
+    }
+    var bufferedPos by remember {
+        mutableLongStateOf(activeExoPlayer.bufferedPosition.coerceAtLeast(0L))
+    }
     var isScrubbing by remember { mutableStateOf(false) }
-
-    if (isFullscreen) {
-        LaunchedEffect(startInLandscape) {
-            if (startInLandscape) {
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            }
-        }
-    }
 
     val coroutineScope = rememberCoroutineScope()
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -226,9 +245,21 @@ fun CoreMediaPlayer(
         mutableStateOf(activity?.isInPictureInPictureMode == true)
     }
 
-    var isVrMode by remember { mutableStateOf(false) }
+    var isVrMode by remember {
+        val shouldStartVr = isFullscreen && (startInVrMode || primaryQuality?.quality?.contains("vr", ignoreCase = true) == true)
+        mutableStateOf(shouldStartVr)
+    }
     var vrUseGyro by remember { mutableStateOf(true) }
     var sphericalViewRef by remember { mutableStateOf<VrSceneSurfaceView?>(null) }
+
+    if (isFullscreen) {
+        LaunchedEffect(startInLandscape, isVrMode) {
+            if (startInLandscape || isVrMode) {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+        }
+    }
+
     var vrStereoMode by remember(primaryQuality?.url) {
         val url = primaryQuality?.url?.lowercase() ?: ""
         val titleLower = title.lowercase()
@@ -286,15 +317,20 @@ fun CoreMediaPlayer(
     }
 
     val handleBackAction = {
-        if (isVrMode) {
+        if (isVrMode && !startInVrMode) {
             sphericalViewRef?.onPause()
-            activeExoPlayer.clearVideoSurface()
-            activeExoPlayer.pause()
+            sphericalViewRef?.clearPlayerSurface(activeExoPlayer)
+            isVrMode = false
+            showControls = true
+        } else if (isVrMode) {
+            sphericalViewRef?.onPause()
+            sphericalViewRef?.clearPlayerSurface(activeExoPlayer)
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            (onTerminateAll ?: onClose)()
-        } else if (isFullscreen && isLandscape) {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            onClose()
         } else if (!isInPipMode) {
+            if (isFullscreen) {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
             onClose()
         }
     }
@@ -328,6 +364,20 @@ fun CoreMediaPlayer(
         val streamHeaders = primaryQuality?.headers ?: emptyMap()
         defaultHeaders + streamHeaders
     }
+
+    var resolvedPlaybackUrl by remember(primaryQuality) {
+        val sessionUrl = if (playerSession.lastRawUrl == primaryQuality?.url) playerSession.lastResolvedStreamUrl else null
+        mutableStateOf(sessionUrl ?: primaryQuality?.url)
+    }
+    var resolvedPlaybackHeaders by remember(primaryQuality, defaultHeaders) {
+        val sessionHdrs = if (playerSession.lastRawUrl == primaryQuality?.url && playerSession.lastResolvedHeaders.isNotEmpty()) {
+            playerSession.lastResolvedHeaders
+        } else {
+            activeHeaders
+        }
+        mutableStateOf(sessionHdrs)
+    }
+    var retryTrigger by remember { mutableIntStateOf(0) }
 
     // Player state & format listener
     BindPlayerStateListener(
@@ -384,6 +434,12 @@ fun CoreMediaPlayer(
         subtitles = subtitles,
         activeHeaders = activeHeaders,
         initialPositionMs = initialPositionMs,
+        retryTrigger = retryTrigger,
+        episodeHint = title.takeIf { it.isNotBlank() && it != "Media Stream" },
+        onStreamResolved = { url, hdrs ->
+            resolvedPlaybackUrl = url
+            resolvedPlaybackHeaders = hdrs
+        },
         onBufferingChanged = { isBuffering = it },
         onDurationChanged = { duration = it },
         onPositionChanged = { currentPos = it },
@@ -602,13 +658,13 @@ fun CoreMediaPlayer(
                 onRelease = { vrView ->
                     vrView.onPause()
                     vrView.setVideoSurfaceListener(null)
-                    activeExoPlayer.clearVideoSurface()
+                    vrView.clearPlayerSurface(activeExoPlayer)
                     sphericalViewRef = null
                 },
                 onReset = { vrView ->
                     vrView.onPause()
                     vrView.setVideoSurfaceListener(null)
-                    activeExoPlayer.clearVideoSurface()
+                    vrView.clearPlayerSurface(activeExoPlayer)
                     sphericalViewRef = null
                 },
                 modifier = Modifier.fillMaxSize()
@@ -699,14 +755,15 @@ fun CoreMediaPlayer(
                     errorDetails = null
                     isBuffering = true
                     com.example.network.debrid.DebridManager.invalidateCache(primaryQuality?.url)
+                    com.example.network.debrid.DebridManager.invalidateCache(resolvedPlaybackUrl)
+                    PlayerSessionTracker.clearSession(activeExoPlayer)
                     if (isVrMode) {
                         isVrMode = false // Graceful fallback to 2D view on decoder failure
                     }
-                    activeExoPlayer.prepare()
-                    activeExoPlayer.play()
+                    retryTrigger++
                 },
                 onOpenExternal = {
-                    openExternalVideoPlayer(context, primaryQuality?.url, title, activeHeaders)
+                    openExternalVideoPlayer(context, resolvedPlaybackUrl ?: primaryQuality?.url, title, resolvedPlaybackHeaders)
                 }
             )
         }
@@ -797,7 +854,12 @@ fun CoreMediaPlayer(
                             switchingQualityLabel = null
                         }
                     }
+                    playerSession.selectedQualityUrl = targetQuality.url
                     activeQualityIndex = newIndex
+                    if (isFullscreen && targetQuality.quality.contains("vr", ignoreCase = true)) {
+                        isVrMode = true
+                        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    }
                 }
             },
             subtitles = subtitles,
@@ -812,28 +874,47 @@ fun CoreMediaPlayer(
                             switchingSubtitleLabel = null
                         }
                     }
+                    playerSession.hasUserSelectedSubtitle = true
+                    playerSession.selectedSubtitleIndex = newSubIndex
                     activeSubtitleIndex = newSubIndex
                 }
             },
             subtitleScale = subtitleScale,
-            onSubtitleScaleChange = { subtitleScale = it },
+            onSubtitleScaleChange = {
+                subtitleScale = it
+                playerSession.subtitleScale = it
+            },
             subtitleBottomPadding = subtitleBottomPadding,
-            onSubtitleBottomPaddingChange = { subtitleBottomPadding = it },
+            onSubtitleBottomPaddingChange = {
+                subtitleBottomPadding = it
+                playerSession.subtitleBottomPadding = it
+            },
             subtitleColorFraction = subtitleColorFraction,
-            onSubtitleColorFractionChange = { subtitleColorFraction = it },
+            onSubtitleColorFractionChange = {
+                subtitleColorFraction = it
+                playerSession.subtitleColorFraction = it
+            },
             subtitleBgOpacity = subtitleBgOpacity,
-            onSubtitleBgOpacityChange = { subtitleBgOpacity = it },
+            onSubtitleBgOpacityChange = {
+                subtitleBgOpacity = it
+                playerSession.subtitleBgOpacity = it
+            },
             subtitleEdgeStyle = subtitleEdgeStyle,
-            onSubtitleEdgeStyleChange = { subtitleEdgeStyle = it },
+            onSubtitleEdgeStyleChange = {
+                subtitleEdgeStyle = it
+                playerSession.subtitleEdgeStyle = it
+            },
             subtitleFontFamily = subtitleFontFamily,
-            onSubtitleFontFamilyChange = { subtitleFontFamily = it },
+            onSubtitleFontFamilyChange = {
+                subtitleFontFamily = it
+                playerSession.subtitleFontFamily = it
+            },
             onToggleVrMode = {
                 if (isVrMode) {
                     sphericalViewRef?.onPause()
-                    activeExoPlayer.clearVideoSurface()
-                    activeExoPlayer.pause()
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    (onTerminateAll ?: onClose)()
+                    sphericalViewRef?.clearPlayerSurface(activeExoPlayer)
+                    isVrMode = false
+                    showControls = true
                 } else {
                     isVrMode = true
                     showControls = true
@@ -897,7 +978,7 @@ fun CoreMediaPlayer(
                 )
             },
             onOpenExternal = {
-                openExternalVideoPlayer(context, primaryQuality?.url, title, activeHeaders)
+                openExternalVideoPlayer(context, resolvedPlaybackUrl ?: primaryQuality?.url, title, resolvedPlaybackHeaders)
             },
             onToggleFullscreen = {
                 if (isFullscreen) {
@@ -940,6 +1021,7 @@ fun GoPlayer(
     defaultHeaders: Map<String, String> = emptyMap(),
     initialPositionMs: Long = 0L,
     startInLandscape: Boolean = false,
+    startInVrMode: Boolean = false,
     exoPlayer: ExoPlayer? = null,
     onClose: () -> Unit,
     onTerminateAll: (() -> Unit)? = null
@@ -952,6 +1034,7 @@ fun GoPlayer(
         defaultHeaders = defaultHeaders,
         initialPositionMs = initialPositionMs,
         startInLandscape = startInLandscape,
+        startInVrMode = startInVrMode,
         exoPlayer = exoPlayer,
         onClose = onClose,
         onTerminateAll = onTerminateAll
@@ -967,6 +1050,7 @@ fun InlineCardPlayer(
     qualities: List<StreamQuality>,
     subtitles: List<com.example.network.SubtitleTrack> = emptyList(),
     defaultHeaders: Map<String, String> = emptyMap(),
+    initialPositionMs: Long = 0L,
     exoPlayer: ExoPlayer? = null,
     enableGestures: Boolean = true,
     onClose: () -> Unit,
@@ -981,6 +1065,7 @@ fun InlineCardPlayer(
         qualities = qualities,
         subtitles = subtitles,
         defaultHeaders = defaultHeaders,
+        initialPositionMs = initialPositionMs,
         exoPlayer = exoPlayer,
         enableGestures = enableGestures,
         onClose = onClose,

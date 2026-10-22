@@ -92,15 +92,18 @@ fun MainAppShell(viewModel: MainViewModel) {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
     var isInPipMode by remember { mutableStateOf(activity?.isInPictureInPictureMode == true) }
+    val currentActiveVideo by rememberUpdatedState(activeVideo)
+    val currentActiveInlineVideo by rememberUpdatedState(activeInlineVideo)
 
     DisposableEffect(activity) {
         if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val listener = Consumer<PictureInPictureModeChangedInfo> { info ->
                 isInPipMode = info.isInPictureInPictureMode
                 if (info.isInPictureInPictureMode) {
-                    if (activeVideo == null && activeInlineVideo != null) {
+                    val inlineVid = currentActiveInlineVideo
+                    if (currentActiveVideo == null && inlineVid != null) {
                         viewModel.enterPipFromInline(
-                            activeInlineVideo!!.cardId,
+                            inlineVid.cardId,
                             viewModel.sharedPlayerManager.getPlayer().currentPosition
                         )
                     }
@@ -131,26 +134,11 @@ fun MainAppShell(viewModel: MainViewModel) {
     CompositionLocalProvider(
         LocalHazeState provides hazeState
     ) {
-        if (isInPipMode) {
-            activeVideo?.let { video ->
-                GoPlayer(
-                    title = video.title,
-                    qualities = video.qualities,
-                    subtitles = video.subtitles,
-                    defaultHeaders = video.headers,
-                    initialPositionMs = video.initialPositionMs,
-                    startInLandscape = false,
-                    exoPlayer = viewModel.sharedPlayerManager.getPlayer(),
-                    onClose = { viewModel.closeVideo() },
-                    onTerminateAll = { viewModel.terminateAllVideoPlayback() }
-                )
-            }
-        } else {
-            ModalNavigationDrawer(
-                drawerState = drawerState,
-                gesturesEnabled = drawerState.isOpen,
-                scrimColor = Color.Black.copy(alpha = 0.5f),
-                drawerContent = {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = drawerState.isOpen && activeVideo == null && !isInPipMode,
+            scrimColor = Color.Black.copy(alpha = 0.5f),
+            drawerContent = {
                     ModalDrawerSheet(
                         drawerContainerColor = palette.cardBg,
                         drawerContentColor = palette.textPrimary,
@@ -455,6 +443,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                                     defaultHeaders = video.headers,
                                     initialPositionMs = video.initialPositionMs,
                                     startInLandscape = video.startInLandscape,
+                                    startInVrMode = video.startInVrMode,
                                     exoPlayer = viewModel.sharedPlayerManager.getPlayer(),
                                     onClose = { viewModel.closeVideo() },
                                     onTerminateAll = { viewModel.terminateAllVideoPlayback() }
@@ -462,7 +451,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                             }
                         }
 
-                        if (resolvingCardId == null) {
+                        if (resolvingCardId == null && !isInPipMode) {
                             resolvingStatus?.let { statusText ->
                                 Box(
                                     modifier = Modifier
@@ -512,7 +501,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                             }
                         }
 
-                        if (resolvingCardId == null) {
+                        if (resolvingCardId == null && !isInPipMode) {
                             videoResolutionError?.let { errText ->
                                 AlertDialog(
                                     onDismissRequest = { viewModel.dismissVideoError() },
@@ -558,6 +547,5 @@ fun MainAppShell(viewModel: MainViewModel) {
                     }
                 }
             }
-        }
     }
 }

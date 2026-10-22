@@ -15,10 +15,13 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object NetworkClient {
+    const val DEFAULT_BROWSER_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
     private val cookieStore = ConcurrentHashMap<String, MutableList<Cookie>>()
     private val sharedConnectionPool = ConnectionPool(24, 10, TimeUnit.MINUTES)
 
-    private val ipv4FirstDns = object : Dns {
+    val ipv4FirstDns = object : Dns {
         override fun lookup(hostname: String): List<InetAddress> {
             val all = Dns.SYSTEM.lookup(hostname)
             val (v4, v6) = all.partition { it is Inet4Address }
@@ -38,6 +41,13 @@ object NetworkClient {
         inMemoryCookieJar.saveFromResponse(httpUrl, listOf(cookie))
     }
 
+    fun getCookieHeader(urlStr: String): String? {
+        val httpUrl = urlStr.toHttpUrlOrNull() ?: return null
+        val cookies = inMemoryCookieJar.loadForRequest(httpUrl)
+        if (cookies.isEmpty()) return null
+        return cookies.joinToString("; ") { "${it.name}=${it.value}" }
+    }
+
     private val inMemoryCookieJar = object : CookieJar {
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
             val list = cookieStore.getOrPut(url.host) { mutableListOf() }
@@ -50,11 +60,17 @@ object NetworkClient {
         }
 
         override fun loadForRequest(url: HttpUrl): List<Cookie> {
-            val list = cookieStore[url.host] ?: return emptyList()
             val now = System.currentTimeMillis()
-            synchronized(list) {
-                return list.filter { it.expiresAt > now }
+            val matched = mutableListOf<Cookie>()
+            val host = url.host.lowercase()
+            for ((storedHost, list) in cookieStore) {
+                if (host == storedHost.lowercase() || host.endsWith(".${storedHost.lowercase()}")) {
+                    synchronized(list) {
+                        matched.addAll(list.filter { it.expiresAt > now })
+                    }
+                }
             }
+            return matched.distinctBy { it.name }
         }
     }
 
@@ -72,23 +88,48 @@ object NetworkClient {
             .addInterceptor { chain ->
                 val original = chain.request()
                 val requestBuilder = original.newBuilder()
-                    .header(
+                if (original.header("User-Agent") == null) {
+                    requestBuilder.header(
                         "User-Agent",
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
                     )
+                }
+                val pathLower = original.url.encodedPath.lowercase()
+                val isImageRequest = pathLower.endsWith(".jpg") ||
+                    pathLower.endsWith(".jpeg") ||
+                    pathLower.endsWith(".png") ||
+                    pathLower.endsWith(".webp") ||
+                    pathLower.endsWith(".avif") ||
+                    pathLower.endsWith(".gif") ||
+                    pathLower.endsWith(".svg") ||
+                    pathLower.contains("/contentthumbs/")
+
                 if (original.header("Accept") == null) {
-                    requestBuilder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                    if (isImageRequest) {
+                        requestBuilder.header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                    } else {
+                        requestBuilder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                    }
                 }
                 requestBuilder
                     .header("Accept-Language", "en-US,en;q=0.9")
                     .header("Sec-Ch-Ua", "\"Chromium\";v=\"128\", \"Not;A=Brand\";v=\"24\", \"Google Chrome\";v=\"128\"")
                     .header("Sec-Ch-Ua-Mobile", "?0")
                     .header("Sec-Ch-Ua-Platform", "\"Windows\"")
-                    .header("Sec-Fetch-Dest", "document")
-                    .header("Sec-Fetch-Mode", "navigate")
-                    .header("Sec-Fetch-Site", "none")
-                    .header("Sec-Fetch-User", "?1")
-                    .header("Upgrade-Insecure-Requests", "1")
+
+                if (isImageRequest) {
+                    requestBuilder
+                        .header("Sec-Fetch-Dest", "image")
+                        .header("Sec-Fetch-Mode", "no-cors")
+                        .header("Sec-Fetch-Site", "cross-site")
+                } else {
+                    requestBuilder
+                        .header("Sec-Fetch-Dest", "document")
+                        .header("Sec-Fetch-Mode", "navigate")
+                        .header("Sec-Fetch-Site", "none")
+                        .header("Sec-Fetch-User", "?1")
+                        .header("Upgrade-Insecure-Requests", "1")
+                }
 
                 val host = original.url.host
                 if (host.contains("sexmex", ignoreCase = true) || host.contains("sexmex-cdn", ignoreCase = true)) {

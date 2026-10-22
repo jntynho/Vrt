@@ -220,7 +220,8 @@ object VideoResolvers {
         queryOrMagnet: String,
         torboxApiKey: String,
         realDebridApiKey: String,
-        debridOrder: DebridOrder = DebridOrder.AUTO
+        debridOrder: DebridOrder = DebridOrder.AUTO,
+        episodeHint: String? = null
     ): ResolvedVideo {
         val debridManager = DebridManager(
             torboxKeyProvider = { torboxApiKey },
@@ -228,17 +229,24 @@ object VideoResolvers {
             debridOrderProvider = { debridOrder }
         )
 
-        val result = debridManager.resolve(queryOrMagnet)
+        val result = debridManager.resolve(queryOrMagnet, episodeHint)
         when (result) {
             is DebridResult.Success -> {
                 val filename = result.filename ?: "Debrid Stream"
                 val ext = MediaUrlValidator.mediaExtensionOf(filename)
+                    ?: MediaUrlValidator.mediaExtensionOf(result.streamUrl)
                 val format = when (ext) {
                     "mkv" -> "MKV"
                     "webm" -> "WEBM"
                     "m3u8" -> "HLS"
                     "mpd" -> "DASH"
-                    else -> "MP4"
+                    "ts", "m2ts", "mts" -> "TS"
+                    "mov" -> "MOV"
+                    "avi" -> "AVI"
+                    "flv" -> "FLV"
+                    "wmv" -> "WMV"
+                    "mp4", "m4v" -> "MP4"
+                    else -> "AUTO"
                 }
 
                 val qualityLabel = when {
@@ -268,9 +276,10 @@ object VideoResolvers {
         }
     }
 
-    private fun isHosterUrl(url: String): Boolean {
-        val lower = url.lowercase()
-        val hosterDomains = listOf("1fichier.com", "rapidgator.net", "mega.nz", "turbobit.net", "uploaded.net", "uptobox.com")
+    fun isHosterUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val lower = url.trim().lowercase()
+        val hosterDomains = listOf("1fichier.com", "rapidgator.net", "mega.nz", "turbobit.net", "uploaded.net", "uptobox.com", "katfile.com", "nitroflare.com", "ddownload.com", " hexupload.net".trim())
         return hosterDomains.any { lower.contains(it) }
     }
 
@@ -279,17 +288,14 @@ object VideoResolvers {
         rawUrl: String,
         torboxApiKey: String = "",
         realDebridApiKey: String = "",
-        debridOrder: DebridOrder = DebridOrder.AUTO
+        debridOrder: DebridOrder = DebridOrder.AUTO,
+        episodeHint: String? = null
     ): ResolvedVideo {
         val trimmed = rawUrl.trim()
 
-        if (MagnetParser.parseHash(trimmed) != null || isHosterUrl(trimmed)) {
-            return resolveDebrid(trimmed, torboxApiKey, realDebridApiKey, debridOrder)
-        }
-
         return when {
             MagnetParser.parseHash(trimmed) != null || isHosterUrl(trimmed) -> {
-                resolveDebrid(trimmed, torboxApiKey, realDebridApiKey, debridOrder)
+                resolveDebrid(trimmed, torboxApiKey, realDebridApiKey, debridOrder, episodeHint)
             }
             GofileScraper.isGofileUrl(trimmed) -> {
                 val streams = GofileScraper.extractStreams(trimmed)
@@ -335,7 +341,9 @@ object VideoResolvers {
                 val format = when (ext) {
                     "mkv" -> "MKV"
                     "webm" -> "WEBM"
-                    else -> "MP4"
+                    "ts", "m2ts", "mts" -> "TS"
+                    "mp4", "m4v" -> "MP4"
+                    else -> "AUTO"
                 }
                 ResolvedVideo(
                     "Media Stream",
