@@ -2791,12 +2791,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     withContext(Dispatchers.Main) {
                         com.example.ui.components.PlayerSessionTracker.clearSession(sharedPlayerManager.getPlayer())
                     }
+                    val primaryReferer = cleanEpisodeQualities.firstOrNull()?.headers?.get("Referer")
+                        ?: resolved.qualities.firstOrNull()?.headers?.get("Referer")
+                        ?: "https://hstream.moe/"
                     _activeVideo.value = ActiveVideoPlayback(
                         title = streamTitle,
                         qualities = cleanEpisodeQualities,
                         subtitles = resolved.subtitles,
                         headers = mapOf(
-                            "Referer" to "https://hstream.moe/",
+                            "Referer" to primaryReferer,
                             "User-Agent" to com.example.ui.components.PlayerFactory.DEFAULT_UA
                         ),
                         startInLandscape = true
