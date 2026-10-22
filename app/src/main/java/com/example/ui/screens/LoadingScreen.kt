@@ -20,23 +20,26 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.ui.components.AppLottieLoadingAnimation
-import com.example.ui.theme.LocalAccentColor
+import com.example.ui.components.UiEngineWarmupSandbox
 import com.example.ui.theme.LocalVaultPalette
 
 /**
- * Minimalist Loading Screen (Resource loading interface).
- * 1. Centered app icon.
- * 2. Lottie loading animation directly beneath it.
- * ONLY these two elements in the center of the screen!
+ * Minimalist Loading Screen (Resource loading & UI Engine Pre-Warmup interface).
+ * 1. Runs the active offscreen UiEngineWarmupSandbox behind the opaque backdrop to pre-compile
+ *    Compose JIT functions, GPU Shaders, LiquidGlassNavigationBar, Ripples, LazyGrids, and Transitions.
+ * 2. Visually displays ONLY:
+ *    - Centered app icon.
+ *    - Lottie loading animation directly beneath it.
  */
 @Composable
 fun LoadingScreen(
     statusText: String = "",
     modifier: Modifier = Modifier,
+    onProgressUpdate: (String) -> Unit = {},
+    onWarmupComplete: () -> Unit = {},
     onDismiss: (() -> Unit)? = null
 ) {
     val palette = LocalVaultPalette.current
-    val accent = LocalAccentColor.current
 
     Box(
         modifier = modifier
@@ -44,41 +47,55 @@ fun LoadingScreen(
             .background(palette.bg),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        // Layer 0 (Behind opaque foreground): Active UI & Shader Warm-up Sandbox
+        UiEngineWarmupSandbox(
+            onProgressUpdate = onProgressUpdate,
+            onWarmupComplete = onWarmupComplete
+        )
+
+        // Layer 1 (Opaque visual foreground): Covers the sandbox completely while keeping the exact clean UI
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(palette.bg),
+            contentAlignment = Alignment.Center
         ) {
-            // Prominent circular app icon with enlarged center emblem
-            Box(
-                modifier = Modifier
-                    .size(108.dp)
-                    .clip(CircleShape)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.ic_launcher_background),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Image(
-                    painter = painterResource(id = R.drawable.ic_loading_foreground),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit
-                )
-            }
+                // Prominent circular app icon with enlarged center emblem
+                Box(
+                    modifier = Modifier
+                        .size(108.dp)
+                        .clip(CircleShape)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_launcher_background),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_loading_foreground),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(28.dp))
+                Spacer(modifier = Modifier.height(28.dp))
 
-            // Smooth Lottie Animation directly underneath
-            Box(
-                modifier = Modifier
-                    .size(width = 180.dp, height = 72.dp)
-                    .clip(RoundedCornerShape(16.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                AppLottieLoadingAnimation(
-                    modifier = Modifier.fillMaxSize()
-                )
+                // Smooth Lottie Animation directly underneath
+                Box(
+                    modifier = Modifier
+                        .size(width = 180.dp, height = 72.dp)
+                        .clip(RoundedCornerShape(16.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AppLottieLoadingAnimation(
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
     }

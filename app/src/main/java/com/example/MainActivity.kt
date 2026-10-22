@@ -83,6 +83,7 @@ class MainActivity : ComponentActivity() {
             }
 
             val isAppResourcesLoading by viewModel.isAppResourcesLoading.collectAsStateWithLifecycle()
+            val isBackendWarmupReady by viewModel.isBackendWarmupReady.collectAsStateWithLifecycle()
             val isAppLocked by viewModel.isAppLocked.collectAsStateWithLifecycle()
 
             GoonyTheme(
@@ -92,56 +93,56 @@ class MainActivity : ComponentActivity() {
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Zero-Leak Root State Management: Loading -> (AppLocked | MainAppShell)
-                        // MainAppShell is NEVER composed or rendered while isAppLocked is true.
-                        AnimatedContent(
-                            targetState = when {
-                                isAppResourcesLoading -> AppRootState.LOADING
-                                isAppLocked -> AppRootState.LOCKED
-                                else -> AppRootState.AUTHENTICATED
-                            },
-                            transitionSpec = {
-                                when {
-                                    initialState == AppRootState.LOADING && targetState == AppRootState.LOCKED -> {
-                                        fadeIn(animationSpec = tween(280)) togetherWith fadeOut(animationSpec = tween(200))
-                                    }
-                                    initialState == AppRootState.LOCKED && targetState == AppRootState.AUTHENTICATED -> {
-                                        (fadeIn(animationSpec = tween(380, easing = FastOutSlowInEasing)) +
-                                                scaleIn(initialScale = 0.96f, animationSpec = tween(380, easing = FastOutSlowInEasing)))
+                        // Layer 0: Once backend & security passcode verification are complete (isBackendWarmupReady),
+                        // pre-compose the verified destination (AppLockScreen or MainAppShell) UNDERNEATH the
+                        // opaque LoadingScreen curtain so its entire Compose tree, layout, and GPU layers are
+                        // 100% rendered BEFORE the LoadingScreen fades out.
+                        // Zero-Leak Security Guarantee: MainAppShell is NEVER composed while isAppLocked is true
+                        // or before the security gate finishes.
+                        if (isBackendWarmupReady || !isAppResourcesLoading) {
+                            AnimatedContent(
+                                targetState = if (isAppLocked) AppRootState.LOCKED else AppRootState.AUTHENTICATED,
+                                transitionSpec = {
+                                    if (initialState == AppRootState.LOCKED && targetState == AppRootState.AUTHENTICATED) {
+                                        (fadeIn(animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                                                scaleIn(initialScale = 0.96f, animationSpec = tween(320, easing = FastOutSlowInEasing)))
                                             .togetherWith(
-                                                fadeOut(animationSpec = tween(220, easing = FastOutLinearInEasing)) +
-                                                        scaleOut(targetScale = 1.04f, animationSpec = tween(220))
+                                                fadeOut(animationSpec = tween(200, easing = FastOutLinearInEasing)) +
+                                                        scaleOut(targetScale = 1.04f, animationSpec = tween(200))
                                             )
+                                    } else {
+                                        fadeIn(animationSpec = tween(240)) togetherWith fadeOut(animationSpec = tween(240))
                                     }
-                                    initialState == AppRootState.LOADING && targetState == AppRootState.AUTHENTICATED -> {
-                                        (fadeIn(animationSpec = tween(380, easing = FastOutSlowInEasing)) +
-                                                scaleIn(initialScale = 0.96f, animationSpec = tween(380, easing = FastOutSlowInEasing)))
-                                            .togetherWith(
-                                                fadeOut(animationSpec = tween(260, easing = FastOutLinearInEasing))
-                                            )
+                                },
+                                label = "RootSecurityTransition"
+                            ) { state ->
+                                when (state) {
+                                    AppRootState.LOCKED -> {
+                                        AppLockScreen(
+                                            onUnlock = { pin ->
+                                                viewModel.unlockApp(pin)
+                                            }
+                                        )
                                     }
-                                    else -> {
-                                        fadeIn(animationSpec = tween(250)) togetherWith fadeOut(animationSpec = tween(250))
+                                    AppRootState.AUTHENTICATED, AppRootState.LOADING -> {
+                                        MainAppShell(viewModel = viewModel)
                                     }
-                                }
-                            },
-                            label = "RootSecurityAndAppTransition"
-                        ) { state ->
-                            when (state) {
-                                AppRootState.LOADING -> {
-                                    LoadingScreen()
-                                }
-                                AppRootState.LOCKED -> {
-                                    AppLockScreen(
-                                        onUnlock = { pin ->
-                                            viewModel.unlockApp(pin)
-                                        }
-                                    )
-                                }
-                                AppRootState.AUTHENTICATED -> {
-                                    MainAppShell(viewModel = viewModel)
                                 }
                             }
+                        }
+
+                        // Layer 1: Opaque LoadingScreen curtain on top. Takes its full time running the 5-stage
+                        // UI, JIT & Shader warmup sandbox and waiting for Layer 0 pre-composition to settle.
+                        AnimatedVisibility(
+                            visible = isAppResourcesLoading,
+                            enter = fadeIn(animationSpec = tween(180)),
+                            exit = fadeOut(animationSpec = tween(320, easing = FastOutSlowInEasing)) +
+                                    scaleOut(targetScale = 1.03f, animationSpec = tween(320, easing = FastOutSlowInEasing))
+                        ) {
+                            LoadingScreen(
+                                onProgressUpdate = viewModel::updateWarmupStatus,
+                                onWarmupComplete = viewModel::markUiEngineWarmupComplete
+                            )
                         }
                     }
                 }

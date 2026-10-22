@@ -46,9 +46,11 @@ paletteKtx = "1.0.0"
 composeIcons = "1.1.1"
 lottie = "6.6.2"
 haze = "1.1.1"
+profileinstaller = "1.4.1"
 
 
 [libraries]
+androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
 lottie-compose = { group = "com.airbnb.android", name = "lottie-compose", version.ref = "lottie" }
 compose-icons-feather = { group = "br.com.devsrsouza.compose.icons", name = "feather", version.ref = "composeIcons" }

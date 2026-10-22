@@ -104,12 +104,26 @@ private data class StashTabCache(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: VaultRepository
 
-    // App Initial Resource Loading Screen States
+    // App Initial Resource & UI Engine Pre-Warmup States
     private val _isAppResourcesLoading = MutableStateFlow(true)
     val isAppResourcesLoading: StateFlow<Boolean> = _isAppResourcesLoading.asStateFlow()
 
+    private val _isBackendWarmupReady = MutableStateFlow(false)
+    val isBackendWarmupReady: StateFlow<Boolean> = _isBackendWarmupReady.asStateFlow()
+
+    private val _isUiEngineWarmupReady = MutableStateFlow(false)
+    val isUiEngineWarmupReady: StateFlow<Boolean> = _isUiEngineWarmupReady.asStateFlow()
+
     private val _resourceLoadingStatus = MutableStateFlow("Checking and preparing resources...")
     val resourceLoadingStatus: StateFlow<String> = _resourceLoadingStatus.asStateFlow()
+
+    fun updateWarmupStatus(status: String) {
+        _resourceLoadingStatus.value = status
+    }
+
+    fun markUiEngineWarmupComplete() {
+        _isUiEngineWarmupReady.value = true
+    }
 
     fun triggerReloadResources() {
         seedInitialDataIfEmpty()
@@ -140,8 +154,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun seedInitialDataIfEmpty() {
         viewModelScope.launch(Dispatchers.IO) {
             _isAppResourcesLoading.value = true
+            _isBackendWarmupReady.value = false
+            _isUiEngineWarmupReady.value = false
             _resourceLoadingStatus.value = "Initializing local database..."
-            delay(450L)
+            delay(350L)
 
             val existingLinks = repository.allLinks.first()
             _resourceLoadingStatus.value = "Verifying links, scenes, and resources..."
@@ -273,7 +289,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // 5. Security Gate: Verify passcode status BEFORE dismissing loading screen to prevent any UI leakage
+            // 5. Security Gate: Verify passcode status BEFORE pre-composing or dismissing loading screen to prevent any UI leakage
             try {
                 val latestSettings = repository.settings.first() ?: SettingsEntity()
                 if (latestSettings.isPasscodeEnabled && latestSettings.passcodeHash.isNotBlank()) {
@@ -285,7 +301,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
             }
 
-            delay(150L)
+            // 6. Signal that backend & security gate are verified so MainActivity can pre-compose
+            // the target screen (MainAppShell or AppLockScreen) underneath the opaque LoadingScreen curtain.
+            _isBackendWarmupReady.value = true
+
+            // 7. Wait for the 5-stage UI, JIT, & GPU Shader Warm-up Sandbox inside LoadingScreen to finish
+            // taking its full time, with a safe upper bound for headless test environments.
+            kotlinx.coroutines.withTimeoutOrNull(3500L) {
+                _isUiEngineWarmupReady.first { it }
+            }
+
+            // 8. Allow the pre-composed MainAppShell / HomeScreen underneath the curtain to settle its
+            // initial layout and GPU render passes before fading out the LoadingScreen.
+            delay(320L)
             _isAppResourcesLoading.value = false
         }
     }

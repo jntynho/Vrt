@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -282,6 +283,8 @@ fun MainAppShell(viewModel: MainViewModel) {
                             }
                         }
 
+                        val saveableStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+
                         AnimatedContent(
                             targetState = currentScreen,
                             modifier = Modifier
@@ -299,20 +302,20 @@ fun MainAppShell(viewModel: MainViewModel) {
                                 }
 
                                 if (isBack) {
-                                    (slideInHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
-                                            fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)))
+                                    (slideInHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
+                                            fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
                                         .togetherWith(
-                                            slideOutHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> width } +
-                                                    fadeOut(animationSpec = tween(220, easing = FastOutLinearInEasing))
+                                            slideOutHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { width -> width } +
+                                                    fadeOut(animationSpec = tween(200, easing = FastOutLinearInEasing))
                                         ).apply {
                                             targetContentZIndex = 0f
                                         }
                                 } else {
-                                    (slideInHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> width } +
-                                            fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)))
+                                    (slideInHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { width -> width } +
+                                            fadeIn(animationSpec = tween(200, easing = LinearOutSlowInEasing)))
                                         .togetherWith(
-                                            slideOutHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
-                                                    fadeOut(animationSpec = tween(220, easing = FastOutLinearInEasing))
+                                            slideOutHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { width -> -width / 4 } +
+                                                    fadeOut(animationSpec = tween(200, easing = FastOutLinearInEasing))
                                         ).apply {
                                             targetContentZIndex = 1f
                                         }
@@ -320,49 +323,58 @@ fun MainAppShell(viewModel: MainViewModel) {
                             },
                             label = "screen_motion_transition"
                         ) { screen ->
-                            when (screen) {
-                                is ScreenState.Home -> HomeScreen(
-                                    viewModel = viewModel,
-                                    screen = screen,
-                                    onOpenDrawer = openDrawerLambda
-                                )
-                                is ScreenState.Bookmarks -> BookmarksScreen(
-                                    viewModel = viewModel
-                                )
-                                is ScreenState.AddEditLink -> AddEditLinkScreen(viewModel, screen.linkId)
-                                is ScreenState.Actors -> ActorManagementScreen(viewModel)
-                                is ScreenState.ActorScenes -> HomeScreen(
-                                    viewModel = viewModel,
-                                    screen = screen,
-                                    onOpenDrawer = openDrawerLambda
-                                )
-                                is ScreenState.Studios -> StudioManagementScreen(viewModel)
-                                is ScreenState.StudioScenes -> HomeScreen(
-                                    viewModel = viewModel,
-                                    screen = screen,
-                                    onOpenDrawer = openDrawerLambda
-                                )
-                                is ScreenState.StashDb -> StashDbScreen(
-                                    viewModel = viewModel,
-                                    onOpenDrawer = openDrawerLambda
-                                )
-                                is ScreenState.Onlyhaven -> OnlyhavenScreen(
-                                     viewModel = viewModel,
-                                     onOpenDrawer = openDrawerLambda
-                                 )
-                                is ScreenState.OnlyhavenCreatorDetails -> CreatorDetailsScreen(
-                                    viewModel = viewModel,
-                                    creator = screen.creator
-                                )
-                                is ScreenState.OnlyhavenSavedCreators -> SavedCreatorsScreen(
-                                    viewModel = viewModel
-                                )
-                                 is ScreenState.Kanime -> KanimeScreen(viewModel = viewModel)
-                                 is ScreenState.KanimeEpisodes -> KanimeEpisodesScreen(
-                                     viewModel = viewModel,
-                                     item = screen.item
-                                 )
-                                 is ScreenState.Settings -> SettingsScreen(viewModel)
+                            val stateKey = remember(screen) { screen::class.simpleName ?: "screen" }
+                            saveableStateHolder.SaveableStateProvider(key = stateKey) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer()
+                                ) {
+                                    when (screen) {
+                                        is ScreenState.Home -> HomeScreen(
+                                            viewModel = viewModel,
+                                            screen = screen,
+                                            onOpenDrawer = openDrawerLambda
+                                        )
+                                        is ScreenState.Bookmarks -> BookmarksScreen(
+                                            viewModel = viewModel
+                                        )
+                                        is ScreenState.AddEditLink -> AddEditLinkScreen(viewModel, screen.linkId)
+                                        is ScreenState.Actors -> ActorManagementScreen(viewModel)
+                                        is ScreenState.ActorScenes -> HomeScreen(
+                                            viewModel = viewModel,
+                                            screen = screen,
+                                            onOpenDrawer = openDrawerLambda
+                                        )
+                                        is ScreenState.Studios -> StudioManagementScreen(viewModel)
+                                        is ScreenState.StudioScenes -> HomeScreen(
+                                            viewModel = viewModel,
+                                            screen = screen,
+                                            onOpenDrawer = openDrawerLambda
+                                        )
+                                        is ScreenState.StashDb -> StashDbScreen(
+                                            viewModel = viewModel,
+                                            onOpenDrawer = openDrawerLambda
+                                        )
+                                        is ScreenState.Onlyhaven -> OnlyhavenScreen(
+                                             viewModel = viewModel,
+                                             onOpenDrawer = openDrawerLambda
+                                         )
+                                        is ScreenState.OnlyhavenCreatorDetails -> CreatorDetailsScreen(
+                                            viewModel = viewModel,
+                                            creator = screen.creator
+                                        )
+                                        is ScreenState.OnlyhavenSavedCreators -> SavedCreatorsScreen(
+                                            viewModel = viewModel
+                                        )
+                                         is ScreenState.Kanime -> KanimeScreen(viewModel = viewModel)
+                                         is ScreenState.KanimeEpisodes -> KanimeEpisodesScreen(
+                                             viewModel = viewModel,
+                                             item = screen.item
+                                         )
+                                         is ScreenState.Settings -> SettingsScreen(viewModel)
+                                    }
+                                }
                             }
                         }
 
