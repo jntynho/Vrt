@@ -48,10 +48,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Setup global Coil ImageLoader with browser User-Agent and SVG support for StashDB studio logos
+        // Purge legacy Coil disk cache that may contain AVIF/HEIF responses negotiated earlier
+        Thread {
+            runCatching {
+                applicationContext.cacheDir.resolve("image_cache").deleteRecursively()
+            }
+        }.start()
+
+        // Setup global Coil ImageLoader with browser User-Agent, SVG support, and HEIF/AVIF guard
+        // to prevent Android's native HeifDecoderImpl::getSize error on unsupported emulators/devices
         val imageLoader = ImageLoader.Builder(applicationContext)
             .okHttpClient(NetworkClient.okHttpClient)
+            .diskCache {
+                coil.disk.DiskCache.Builder()
+                    .directory(applicationContext.cacheDir.resolve("image_cache_v2"))
+                    .build()
+            }
             .components {
+                add(HeifAvifGuardDecoderFactory())
                 add(SvgDecoder.Factory())
             }
             .build()
@@ -150,3 +164,58 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+/**
+ * Custom Coil Decoder.Factory that intercepts ISOBMFF (HEIF / HEIC / AVIF) streams before
+ * Coil's default BitmapFactoryDecoder runs with `inSampleSize > 1`.
+ *
+ * In Android's Skia (`SkHeifCodec::onGetScaledDimensions`), passing `inSampleSize > 1`
+ * invokes `HeifDecoderImpl::getSize()`, which is unimplemented in AOSP's `libheif` and
+ * logs `E/HeifDecoderImpl: getSize: not supported!`. By decoding ISOBMFF streams with
+ * `inSampleSize = 1` and `inScaled = false` and scaling the resulting Bitmap in Kotlin,
+ * `HeifDecoderImpl::getSize()` is never called.
+ */
+private class HeifAvifGuardDecoderFactory : coil.decode.Decoder.Factory {
+    override fun create(
+        result: coil.fetch.SourceResult,
+        options: coil.request.Options,
+        imageLoader: ImageLoader
+    ): coil.decode.Decoder? {
+        val mime = result.mimeType?.lowercase().orEmpty()
+        val isHeifOrAvifMime = mime.contains("heif") || mime.contains("heic") || mime.contains("avif")
+        if (!isHeifOrAvifMime && !isIsoBmffContainer(result.source.source())) {
+            return null
+        }
+        return coil.decode.Decoder {
+            val bytes = result.source.source().use { it.readByteArray() }
+            val decodeOpts = android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = 1
+                inScaled = false
+                inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+            }
+            val rawBitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+                ?: android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
+
+            coil.decode.DecodeResult(
+                drawable = android.graphics.drawable.BitmapDrawable(options.context.resources, rawBitmap),
+                isSampled = false
+            )
+        }
+    }
+
+    private fun isIsoBmffContainer(source: okio.BufferedSource): Boolean {
+        return try {
+            val peek = source.peek()
+            if (!peek.request(12)) return false
+            val header = peek.readByteArray(12)
+            // Bytes 4..7 == 'f', 't', 'y', 'p'
+            header[4] == 'f'.code.toByte() &&
+                header[5] == 't'.code.toByte() &&
+                header[6] == 'y'.code.toByte() &&
+                header[7] == 'p'.code.toByte()
+        } catch (_: Exception) {
+            false
+        }
+    }
+}
+

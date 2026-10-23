@@ -19,13 +19,13 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
 enum class KanimeSortOrder(val apiValue: String, val displayName: String) {
-    AZ("az", "A-Z"),
-    ZA("za", "Z-A"),
     RECENTLY_UPLOADED("recently-uploaded", "Recently Uploaded"),
     RECENTLY_RELEASED("recently-released", "Recently Released"),
     OLDEST_UPLOADS("oldest-uploads", "Oldest Uploads"),
     OLDEST_RELEASES("oldest-releases", "Oldest Releases"),
-    VIEW_COUNT("view-count", "View Count")
+    VIEW_COUNT("view-count", "View Count"),
+    AZ("az", "A - Z"),
+    ZA("za", "Z - A")
 }
 
 data class KstreamMediaItem(

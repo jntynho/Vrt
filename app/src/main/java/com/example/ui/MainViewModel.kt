@@ -1846,6 +1846,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Search and Sort
     val searchQuery = MutableStateFlow("")
     val sortMode = MutableStateFlow(SortMode.CARD_NEWEST)
+    val bookmarksSortMode = MutableStateFlow(SortMode.CARD_NEWEST)
+    val actorsSortOption = MutableStateFlow(com.example.ui.screens.ManagementSortOption.NAME_AZ)
+    val studiosSortOption = MutableStateFlow(com.example.ui.screens.ManagementSortOption.NAME_AZ)
+    val savedSortOption = MutableStateFlow(com.example.ui.screens.SavedSortOption.RECENTLY_ADDED)
     val bookmarkedIds = MutableStateFlow<Set<String>>(emptySet())
 
     fun toggleBookmark(id: String) {
@@ -2354,26 +2358,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onError: (String) -> Unit
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            val isXhamster = com.example.network.XhamsterScraper.isXhamsterUrl(url)
+            val sourceLabel = if (isXhamster) "xHamster" else "PornHub"
             try {
-                val meta = VideoResolvers.extractPornhubMetadata(url)
+                val meta = if (isXhamster) {
+                    com.example.network.XhamsterScraper.extractMetadata(url)
+                } else {
+                    VideoResolvers.extractPornhubMetadata(url)
+                }
                 if (meta == null || (meta.title.isNullOrBlank() && meta.coverUrl.isNullOrBlank())) {
                     withContext(Dispatchers.Main) {
-                        onError("Could not extract metadata from this PornHub link.")
+                        onError("Could not extract metadata from this $sourceLabel link.")
                     }
                     return@launch
                 }
 
-                // 1. Ensure Studio "PornHub" exists in database
+                val targetStudioName = meta.studioName.ifBlank { sourceLabel }
+
+                // 1. Ensure Studio ("PornHub" or "xHamster") exists in database
                 val currentStudios = repository.allStudios.first()
-                val existingPhStudio = currentStudios.firstOrNull {
-                    it.name.trim().equals("PornHub", ignoreCase = true)
+                val existingStudio = currentStudios.firstOrNull {
+                    it.name.trim().equals(targetStudioName, ignoreCase = true)
                 }
-                val resolvedStudioId = if (existingPhStudio != null) {
-                    existingPhStudio.id
+                val resolvedStudioId = if (existingStudio != null) {
+                    existingStudio.id
                 } else {
                     val newStudio = StudioEntity(
                         id = UUID.randomUUID().toString(),
-                        name = "PornHub"
+                        name = targetStudioName
                     )
                     repository.insertStudio(newStudio)
                     newStudio.id
@@ -2409,7 +2421,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     firstActorId = resolvedActorId,
                     firstActorName = cleanPerformerName,
                     studioId = resolvedStudioId,
-                    studioName = "PornHub"
+                    studioName = targetStudioName
                 )
                 withContext(Dispatchers.Main) {
                     onSuccess(result)
@@ -2417,7 +2429,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 withContext(Dispatchers.Main) {
-                    onError("Failed to capture PornHub metadata: ${e.message ?: "Network error"}")
+                    onError("Failed to capture $sourceLabel metadata: ${e.message ?: "Network error"}")
                 }
             }
         }

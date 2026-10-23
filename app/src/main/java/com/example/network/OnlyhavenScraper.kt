@@ -52,12 +52,12 @@ data class OnlyhavenSavedPost(
 
 enum class OnlyhavenSortMode(val apiValue: String, val displayName: String) {
     POPULARITY("bookmarked", "Popularity"),
-    DATE_INDEXED("indexed", "Date indexed"),
-    DATE_UPDATED("updated", "Date updated"),
+    DATE_INDEXED("indexed", "Date Indexed"),
+    DATE_UPDATED("updated", "Date Updated"),
     ALPHABETICAL("name", "Alphabetical"),
-    BY_SERVICE("service", "By service"),
-    DM_COUNT("dm_count", "DM count"),
-    POST_COUNT("post_count", "Post count")
+    BY_SERVICE("service", "By Service"),
+    DM_COUNT("dm_count", "DM Count"),
+    POST_COUNT("post_count", "Post Count")
 }
 
 object OnlyhavenScraper {

@@ -286,7 +286,7 @@ fun KanimeScreen(
                             )
                         }
 
-                        // Sort Action Button with standard unified DropdownMenu design
+                        // Sort Action Button with standard unified VaultSortDropdownMenu design
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -299,39 +299,20 @@ fun KanimeScreen(
                                 )
                             }
 
-                            DropdownMenu(
+                            com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
-                                modifier = Modifier.vaultTopGlow(cornerRadius = 16.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                containerColor = palette.cardBg
-                            ) {
-                                sortOptions.forEach { order ->
-                                    val isSelected = currentSort == order
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                text = order.displayName,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSelected) accent else palette.textPrimary
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    tint = accent
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            viewModel.setKanimeSortOrder(order)
-                                            showSortMenu = false
-                                        }
+                                options = sortOptions.map { order ->
+                                    com.example.ui.components.VaultSortOption(
+                                        value = order,
+                                        label = order.displayName,
+                                        isSelected = currentSort == order
                                     )
+                                },
+                                onOptionSelected = { order ->
+                                    viewModel.setKanimeSortOrder(order)
                                 }
-                            }
+                            )
                         }
                     }
                 },

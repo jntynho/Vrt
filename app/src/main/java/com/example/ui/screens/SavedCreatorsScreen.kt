@@ -58,10 +58,10 @@ enum class SavedTab {
 }
 
 enum class SavedSortOption(val displayName: String) {
-    A_Z("A-z"),
-    Z_A("Z-a"),
     RECENTLY_ADDED("Recently Added"),
-    OLDEST_ADDED("Oldest Added")
+    OLDEST_ADDED("Oldest Added"),
+    A_Z("A - Z"),
+    Z_A("Z - A")
 }
 
 @Composable
@@ -85,15 +85,24 @@ fun SavedCreatorsScreen(
         SavedTab.IMAGES -> imagesGridState
         SavedTab.VIDEOS -> videosGridState
     }
-    var sortOption by remember { mutableStateOf(SavedSortOption.RECENTLY_ADDED) }
+    val sortOption by viewModel.savedSortOption.collectAsStateWithLifecycle()
     var showSortMenu by remember { mutableStateOf(false) }
 
-    // Fallback: If switching from Model with A-z or Z-a to Image/Video, reset to Recently Added
+    // Fallback: If switching from Model with A - Z or Z - A to Image/Video, reset to Recently Added
     LaunchedEffect(selectedTab) {
         if ((selectedTab == SavedTab.IMAGES || selectedTab == SavedTab.VIDEOS) &&
             (sortOption == SavedSortOption.A_Z || sortOption == SavedSortOption.Z_A)
         ) {
-            sortOption = SavedSortOption.RECENTLY_ADDED
+            viewModel.savedSortOption.value = SavedSortOption.RECENTLY_ADDED
+        }
+    }
+
+    // Reset scroll position to top when sort option changes
+    var previousSort by remember { mutableStateOf(sortOption) }
+    LaunchedEffect(sortOption) {
+        if (previousSort != sortOption) {
+            previousSort = sortOption
+            currentGridState.scrollToItem(0)
         }
     }
 
@@ -175,89 +184,34 @@ fun SavedCreatorsScreen(
                                 )
                             }
 
-                            DropdownMenu(
+                            val availableSortOptions = if (selectedTab == SavedTab.MODELS) {
+                                listOf(
+                                    SavedSortOption.A_Z,
+                                    SavedSortOption.Z_A,
+                                    SavedSortOption.RECENTLY_ADDED,
+                                    SavedSortOption.OLDEST_ADDED
+                                )
+                            } else {
+                                listOf(
+                                    SavedSortOption.RECENTLY_ADDED,
+                                    SavedSortOption.OLDEST_ADDED
+                                )
+                            }
+
+                            com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
-                                modifier = Modifier.vaultTopGlow(cornerRadius = 16.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                containerColor = palette.cardBg
-                            ) {
-                                if (selectedTab == SavedTab.MODELS) {
-                                    DropdownMenuItem(
-                                        text = { Text("A-z", color = if (sortOption == SavedSortOption.A_Z) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.A_Z) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.A_Z
-                                            showSortMenu = false
-                                        }
+                                options = availableSortOptions.map { option ->
+                                    com.example.ui.components.VaultSortOption(
+                                        value = option,
+                                        label = option.displayName,
+                                        isSelected = sortOption == option
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("Z-a", color = if (sortOption == SavedSortOption.Z_A) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.Z_A) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.Z_A
-                                            showSortMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Recently Added", color = if (sortOption == SavedSortOption.RECENTLY_ADDED) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.RECENTLY_ADDED) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.RECENTLY_ADDED
-                                            showSortMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Oldest Added", color = if (sortOption == SavedSortOption.OLDEST_ADDED) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.OLDEST_ADDED) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.OLDEST_ADDED
-                                            showSortMenu = false
-                                        }
-                                    )
-                                } else {
-                                    DropdownMenuItem(
-                                        text = { Text("Recently Added", color = if (sortOption == SavedSortOption.RECENTLY_ADDED) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.RECENTLY_ADDED) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.RECENTLY_ADDED
-                                            showSortMenu = false
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Oldest Added", color = if (sortOption == SavedSortOption.OLDEST_ADDED) accent else palette.textPrimary) },
-                                        leadingIcon = {
-                                            if (sortOption == SavedSortOption.OLDEST_ADDED) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                            }
-                                        },
-                                        onClick = {
-                                            sortOption = SavedSortOption.OLDEST_ADDED
-                                            showSortMenu = false
-                                        }
-                                    )
+                                },
+                                onOptionSelected = { selectedOption ->
+                                    viewModel.savedSortOption.value = selectedOption
                                 }
-                            }
+                            )
                         }
                     }
                 )

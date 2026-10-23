@@ -192,7 +192,11 @@ fun AddEditLinkScreen(
         updateField(newValue)
         val trimmed = newValue.trim()
         val isBulkPaste = isExplicitPaste || (trimmed.length - oldValue.trim().length >= 12)
-        if (isBulkPaste && com.example.network.VideoResolvers.isPornhubUrl(trimmed)) {
+        if (isBulkPaste && (
+                com.example.network.VideoResolvers.isPornhubUrl(trimmed) ||
+                    com.example.network.XhamsterScraper.isXhamsterUrl(trimmed)
+                )
+        ) {
             pendingPornhubUrl = trimmed
         }
     }
@@ -269,6 +273,11 @@ fun AddEditLinkScreen(
 
     if (pendingPornhubUrl != null) {
         val targetPornhubUrl = pendingPornhubUrl!!
+        val detectedSourceName = if (com.example.network.XhamsterScraper.isXhamsterUrl(targetPornhubUrl)) {
+            "xHamster"
+        } else {
+            "PornHub"
+        }
         AlertDialog(
             onDismissRequest = {
                 if (!isCapturingPornhubMetadata) {
@@ -278,7 +287,7 @@ fun AddEditLinkScreen(
             modifier = Modifier.vaultTopGlow(),
             title = {
                 Text(
-                    text = "PornHub Link Detected",
+                    text = "$detectedSourceName Link Detected",
                     color = palette.textPrimary,
                     fontWeight = FontWeight.Bold
                 )
@@ -286,7 +295,7 @@ fun AddEditLinkScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Would you like to capture the scene metadata (Title, Date, First Performer, PornHub Studio, and Cover), or add the URL only?",
+                        text = "Would you like to capture the scene metadata (Title, Date, First Performer, $detectedSourceName Studio, and Cover), or add the URL only?",
                         color = palette.textSecondary,
                         fontSize = 14.sp,
                         lineHeight = 20.sp
@@ -302,7 +311,7 @@ fun AddEditLinkScreen(
                                 strokeWidth = 2.dp
                             )
                             Text(
-                                text = "Capturing metadata from PornHub...",
+                                text = "Capturing metadata from $detectedSourceName...",
                                 color = accent,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium
@@ -339,7 +348,7 @@ fun AddEditLinkScreen(
 
                                 Toast.makeText(
                                     context,
-                                    "PornHub metadata captured successfully!",
+                                    "${captured.studioName} metadata captured successfully!",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             },

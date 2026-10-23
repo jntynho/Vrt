@@ -179,7 +179,19 @@ fun OnlyhavenScreen(
                             )
                         }
 
-                        // Sort Action with Dropdown Menu
+                        // Search Action
+                        IconButton(
+                            onClick = { isSearchExpanded = true },
+                            modifier = Modifier.testTag("search_creators_action_button")
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_app_search),
+                                contentDescription = "Search",
+                                tint = palette.textPrimary
+                            )
+                        }
+
+                        // Sort Action with Unified Dropdown Menu
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -192,76 +204,21 @@ fun OnlyhavenScreen(
                                 )
                             }
 
-                            DropdownMenu(
+                            com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
-                                modifier = Modifier
-                                    .vaultTopGlow(cornerRadius = 16.dp)
-                                    .widthIn(min = 210.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                containerColor = palette.cardBg
-                            ) {
-                                OnlyhavenSortMode.entries.forEach { mode ->
-                                    val isSelected = currentSort == mode
-
-                                    val animatedTextColor by animateColorAsState(
-                                        targetValue = if (isSelected) accent else palette.textPrimary,
-                                        animationSpec = tween(durationMillis = 220),
-                                        label = "sort_text_color"
+                                options = OnlyhavenSortMode.entries.map { mode ->
+                                    com.example.ui.components.VaultSortOption(
+                                        value = mode,
+                                        label = mode.displayName,
+                                        isSelected = currentSort == mode
                                     )
-                                    val animatedBgColor by animateColorAsState(
-                                        targetValue = if (isSelected) accent.copy(alpha = 0.12f) else Color.Transparent,
-                                        animationSpec = tween(durationMillis = 220),
-                                        label = "sort_bg_color"
-                                    )
-
-                                    DropdownMenuItem(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(animatedBgColor),
-                                        text = {
-                                            Text(
-                                                text = mode.displayName,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = animatedTextColor,
-                                                fontSize = 14.5.sp
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            AnimatedVisibility(
-                                                visible = isSelected,
-                                                enter = fadeIn(tween(180)) + scaleIn(initialScale = 0.6f, animationSpec = tween(180)),
-                                                exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.6f, animationSpec = tween(140))
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    tint = accent,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            if (currentSort != mode) {
-                                                viewModel.setOnlyhavenSortMode(mode)
-                                            }
-                                            showSortMenu = false
-                                        }
-                                    )
+                                },
+                                onOptionSelected = { mode ->
+                                    if (currentSort != mode) {
+                                        viewModel.setOnlyhavenSortMode(mode)
+                                    }
                                 }
-                            }
-                        }
-
-                        IconButton(
-                            onClick = { isSearchExpanded = true },
-                            modifier = Modifier.testTag("search_creators_action_button")
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_app_search),
-                                contentDescription = "Search",
-                                tint = palette.textPrimary
                             )
                         }
                     }

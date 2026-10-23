@@ -99,17 +99,24 @@ object NetworkClient {
                     pathLower.endsWith(".jpeg") ||
                     pathLower.endsWith(".png") ||
                     pathLower.endsWith(".webp") ||
-                    pathLower.endsWith(".avif") ||
                     pathLower.endsWith(".gif") ||
                     pathLower.endsWith(".svg") ||
-                    pathLower.contains("/contentthumbs/")
+                    pathLower.contains("/contentthumbs/") ||
+                    pathLower.contains("/images/")
 
-                if (original.header("Accept") == null) {
+                val existingAccept = original.header("Accept")
+                if (existingAccept == null) {
                     if (isImageRequest) {
-                        requestBuilder.header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                        requestBuilder.header("Accept", "image/webp,image/apng,image/svg+xml,image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5")
                     } else {
-                        requestBuilder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                        requestBuilder.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8")
                     }
+                } else if (existingAccept.contains("image/avif", ignoreCase = true) || existingAccept.contains("image/heif", ignoreCase = true)) {
+                    val sanitizedAccept = existingAccept
+                        .replace("image/avif,", "", ignoreCase = true)
+                        .replace("image/heif,", "", ignoreCase = true)
+                        .replace("image/heic,", "", ignoreCase = true)
+                    requestBuilder.header("Accept", sanitizedAccept)
                 }
                 requestBuilder
                     .header("Accept-Language", "en-US,en;q=0.9")

@@ -8,7 +8,9 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import java.net.URI
 import java.net.URLEncoder
 import java.util.regex.Pattern
@@ -1010,6 +1012,342 @@ object XhamsterScraper {
 
         sorted.mapIndexed { idx, sq ->
             sq.copy(isDefault = idx == defaultIndex)
+        }
+    }
+
+    /**
+     * Extracts rich scene metadata from an xHamster video URL:
+     * - Title
+     * - Upload / Release Date (in epoch millis)
+     * - First Performer (Name + optional Avatar URL)
+     * - Studio ("xHamster")
+     * - Cover Image URL
+     */
+    suspend fun extractMetadata(rawUrl: String): PornhubSceneMetadata? = withContext(Dispatchers.IO) {
+        val trimmedUrl = rawUrl.trim()
+        if (!isXhamsterUrl(trimmedUrl)) return@withContext null
+
+        val normalizedUrl = if (trimmedUrl.startsWith("http://", ignoreCase = true) ||
+            trimmedUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            trimmedUrl
+        } else {
+            "https://$trimmedUrl"
+        }
+
+        val pageOrigin = try {
+            val u = URI(normalizedUrl)
+            if (!u.scheme.isNullOrBlank() && !u.host.isNullOrBlank()) "${u.scheme}://${u.host}" else "https://xhamster.com"
+        } catch (_: Exception) {
+            "https://xhamster.com"
+        }
+
+        try {
+            val pageReq = Request.Builder()
+                .url(normalizedUrl)
+                .header("User-Agent", SCRAPER_USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Referer", "$pageOrigin/")
+                .build()
+
+            val pageRes = NetworkClient.okHttpClient.newCall(pageReq).await()
+            val html = pageRes.body?.string().orEmpty()
+            pageRes.close()
+
+            if (html.isBlank()) return@withContext null
+
+            val doc = Jsoup.parse(html, normalizedUrl)
+
+            var extractedTitle: String? = null
+            var extractedCover: String? = null
+            var extractedDateMillis: Long? = null
+            var extractedDateStr: String? = null
+            var extractedPerformerName: String? = null
+            var extractedPerformerAvatar: String? = null
+
+            val blockedPerformerWords = setOf(
+                "pornstars", "all pornstars", "top pornstars", "female pornstars",
+                "male pornstars", "creators", "all creators", "channels", "categories",
+                "tags", "users", "more", "suggest", "verified", "xhamster"
+            )
+
+            // 1. Parse window.initials JSON if present
+            val initials = extractWindowInitialsJson(html)
+            if (initials != null) {
+                val videoModel = initials.optJSONObject("videoModel")
+                    ?: initials.optJSONObject("videoEntity")
+                val xplayerSettings = initials.optJSONObject("xplayerSettings")
+
+                if (videoModel != null) {
+                    extractedTitle = videoModel.optString("title").trim().takeIf { it.isNotBlank() }
+
+                    extractedCover = decodeXhamsterUrl(videoModel.optString("thumbURL"))?.takeIf { it.isNotBlank() }
+                        ?: decodeXhamsterUrl(videoModel.optString("bigThumbURL"))?.takeIf { it.isNotBlank() }
+                        ?: decodeXhamsterUrl(videoModel.optString("previewThumbURL"))?.takeIf { it.isNotBlank() }
+
+                    val createdEpoch = videoModel.optLong("created", 0L)
+                    if (createdEpoch > 0L) {
+                        extractedDateMillis = if (createdEpoch < 100_000_000_000L) {
+                            createdEpoch * 1000L
+                        } else {
+                            createdEpoch
+                        }
+                    }
+                }
+
+                if (xplayerSettings != null) {
+                    val movieObj = xplayerSettings.optJSONObject("Movie")
+                    if (extractedTitle.isNullOrBlank()) {
+                        extractedTitle = movieObj?.optString("title")?.trim()?.takeIf { it.isNotBlank() }
+                    }
+                    if (extractedCover.isNullOrBlank()) {
+                        extractedCover = decodeXhamsterUrl(xplayerSettings.optString("poster"))?.takeIf { it.isNotBlank() }
+                            ?: decodeXhamsterUrl(movieObj?.optString("poster"))?.takeIf { it.isNotBlank() }
+                    }
+                }
+
+                // Collect candidate tag/performer arrays from window.initials
+                val tagArrays = listOfNotNull(
+                    videoModel?.optJSONArray("pornstars"),
+                    videoModel?.optJSONArray("actors"),
+                    videoModel?.optJSONArray("categories"),
+                    initials.optJSONObject("videoTagsComponent")?.optJSONArray("tags"),
+                    initials.optJSONArray("videoTags")
+                )
+
+                // Pass 1a: Explicit Pornstar entries in window.initials
+                for (arr in tagArrays) {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val name = obj.optString("name").trim()
+                        if (name.length < 2 || name.lowercase() in blockedPerformerWords) continue
+
+                        val itemUrl = (obj.optString("url") + " " + obj.optString("pageURL")).lowercase()
+                        val isPornstar = obj.optBoolean("isPornstar", false) ||
+                            obj.optString("type").equals("pornstar", ignoreCase = true) ||
+                            obj.optString("role").equals("pornstar", ignoreCase = true) ||
+                            itemUrl.contains("/pornstars/") ||
+                            arr === videoModel?.optJSONArray("pornstars") ||
+                            arr === videoModel?.optJSONArray("actors")
+
+                        if (isPornstar) {
+                            extractedPerformerName = name
+                            extractedPerformerAvatar = decodeXhamsterUrl(
+                                obj.optString("thumbUrl").ifBlank {
+                                    obj.optString("thumbURL").ifBlank {
+                                        obj.optString("imageURL").ifBlank {
+                                            obj.optString("avatar").ifBlank {
+                                                obj.optString("avatarUrl")
+                                            }
+                                        }
+                                    }
+                                }
+                            )?.takeIf { it.isNotBlank() && !it.endsWith(".avif", ignoreCase = true) && !it.endsWith(".heic", ignoreCase = true) }
+                            break
+                        }
+                    }
+                    if (!extractedPerformerName.isNullOrBlank()) break
+                }
+
+                // Pass 1b: Creator entries in window.initials if no pornstar found yet
+                if (extractedPerformerName.isNullOrBlank()) {
+                    for (arr in tagArrays) {
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val name = obj.optString("name").trim()
+                            if (name.length < 2 || name.lowercase() in blockedPerformerWords) continue
+
+                            val itemUrl = (obj.optString("url") + " " + obj.optString("pageURL")).lowercase()
+                            val isCreator = obj.optBoolean("isCreator", false) ||
+                                obj.optString("type").equals("creator", ignoreCase = true) ||
+                                itemUrl.contains("/creators/")
+
+                            if (isCreator) {
+                                extractedPerformerName = name
+                                extractedPerformerAvatar = decodeXhamsterUrl(
+                                    obj.optString("thumbUrl").ifBlank {
+                                        obj.optString("thumbURL").ifBlank {
+                                            obj.optString("imageURL").ifBlank {
+                                                obj.optString("avatar").ifBlank {
+                                                    obj.optString("avatarUrl")
+                                                }
+                                            }
+                                        }
+                                    }
+                                )?.takeIf { it.isNotBlank() && !it.endsWith(".avif", ignoreCase = true) && !it.endsWith(".heic", ignoreCase = true) }
+                                break
+                            }
+                        }
+                        if (!extractedPerformerName.isNullOrBlank()) break
+                    }
+                }
+            }
+
+            // 2. Parse JSON-LD (application/ld+json) for any missing fields
+            val ldJsonElements = doc.select("script[type=application/ld+json]")
+            for (scriptEl in ldJsonElements) {
+                val rawJson = scriptEl.data().trim()
+                if (rawJson.isEmpty()) continue
+                try {
+                    val jsonObj = if (rawJson.startsWith("[")) {
+                        val arr = JSONArray(rawJson)
+                        (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                            .firstOrNull { it.optString("@type").contains("VideoObject", ignoreCase = true) }
+                            ?: arr.optJSONObject(0)
+                    } else {
+                        JSONObject(rawJson)
+                    }
+                    if (jsonObj != null) {
+                        if (extractedTitle.isNullOrBlank()) {
+                            extractedTitle = jsonObj.optString("name").trim().takeIf { it.isNotBlank() }
+                        }
+                        if (extractedCover.isNullOrBlank()) {
+                            val thumbAny = jsonObj.opt("thumbnailUrl")
+                            extractedCover = when (thumbAny) {
+                                is String -> thumbAny.trim().takeIf { it.isNotBlank() }
+                                is JSONArray -> (0 until thumbAny.length())
+                                    .mapNotNull { thumbAny.optString(it).trim().takeIf { s -> s.isNotBlank() } }
+                                    .firstOrNull()
+                                else -> null
+                            }
+                        }
+                        if (extractedDateMillis == null && extractedDateStr.isNullOrBlank()) {
+                            extractedDateStr = jsonObj.optString("uploadDate").trim().takeIf { it.isNotBlank() }
+                                ?: jsonObj.optString("datePublished").trim().takeIf { it.isNotBlank() }
+                        }
+                        if (extractedPerformerName.isNullOrBlank()) {
+                            val actorsArr = jsonObj.optJSONArray("actor")
+                            if (actorsArr != null && actorsArr.length() > 0) {
+                                val firstActor = actorsArr.optJSONObject(0)
+                                val actorName = firstActor?.optString("name")?.trim()
+                                    ?: actorsArr.optString(0).trim()
+                                if (actorName.length >= 2 && actorName.lowercase() !in blockedPerformerWords) {
+                                    extractedPerformerName = actorName
+                                    extractedPerformerAvatar = firstActor?.optString("image")?.trim()?.takeIf { it.isNotBlank() }
+                                }
+                            } else {
+                                val actorObj = jsonObj.optJSONObject("actor")
+                                val actorName = actorObj?.optString("name")?.trim().orEmpty()
+                                if (actorName.length >= 2 && actorName.lowercase() !in blockedPerformerWords) {
+                                    extractedPerformerName = actorName
+                                    extractedPerformerAvatar = actorObj?.optString("image")?.trim()?.takeIf { it.isNotBlank() }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Ignore malformed JSON-LD block
+                }
+            }
+
+            // 3. Fallback & cleanup for Title
+            if (extractedTitle.isNullOrBlank()) {
+                extractedTitle = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
+                    ?: doc.selectFirst("meta[name=twitter:title]")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
+                    ?: doc.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotBlank() }
+            }
+            extractedTitle = extractedTitle
+                ?.replace(Regex("""\s*[-|—]\s*xHamster(\.[a-z0-9]+)?\s*$""", RegexOption.IGNORE_CASE), "")
+                ?.replace(Regex("""\s*[-|—]\s*Free Porn Videos.*$""", RegexOption.IGNORE_CASE), "")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+
+            // 4. Fallback for Cover Image
+            if (extractedCover.isNullOrBlank()) {
+                extractedCover = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
+                    ?: doc.selectFirst("meta[name=twitter:image]")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
+                    ?: doc.selectFirst("video[poster]")?.attr("poster")?.trim()?.takeIf { it.isNotBlank() }
+            }
+
+            // 5. Fallback for Upload Date
+            if (extractedDateMillis == null) {
+                if (extractedDateStr.isNullOrBlank()) {
+                    extractedDateStr = doc.selectFirst("meta[property=video:release_date]")?.attr("content")?.trim()?.takeIf { it.isNotBlank() }
+                        ?: doc.selectFirst("time[datetime]")?.attr("datetime")?.trim()?.takeIf { it.isNotBlank() }
+                        ?: doc.selectFirst("[data-role=video-date], .entity-info-container__date")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                }
+                extractedDateMillis = VideoResolvers.parsePornhubDateToMillis(extractedDateStr)
+            }
+
+            // 6. Fallback for First Performer from HTML DOM (/pornstars/ first, then /creators/)
+            if (extractedPerformerName.isNullOrBlank()) {
+                val domGroups = listOf(
+                    "a[href*='/pornstars/']" to "/pornstars/",
+                    "a[href*='/creators/']" to "/creators/"
+                )
+                val excludedSlugs = setOf("all", "top", "female", "male", "trans", "new", "hd", "vr", "4k")
+
+                for ((selector, marker) in domGroups) {
+                    val links = doc.select(selector)
+                    for (el in links) {
+                        val href = el.attr("href").trim()
+                        val slug = href.substringAfter(marker, "")
+                            .trim('/')
+                            .substringBefore('?')
+                            .substringBefore('#')
+                            .trim()
+
+                        if (slug.isBlank() || slug.contains('/') || slug.lowercase() in excludedSlugs) continue
+
+                        val candidateName = el.attr("title").trim()
+                            .ifEmpty { el.text().trim() }
+                            .replace(Regex("""\s+\d+(\.\d+)?[KMB]?\s*$""", RegexOption.IGNORE_CASE), "")
+                            .trim()
+
+                        if (candidateName.length >= 2 && candidateName.lowercase() !in blockedPerformerWords) {
+                            extractedPerformerName = candidateName
+                            val imgEl = el.selectFirst("img")
+                            val avatarCandidate = imgEl?.attr("data-src")?.takeIf { it.isNotBlank() }
+                                ?: imgEl?.attr("src")?.takeIf { it.isNotBlank() }
+                            if (!avatarCandidate.isNullOrBlank() && !avatarCandidate.startsWith("data:")) {
+                                extractedPerformerAvatar = avatarCandidate
+                            }
+                            break
+                        }
+                    }
+                    if (!extractedPerformerName.isNullOrBlank()) break
+                }
+            }
+
+            // 7. Final fallback for Performer: video author / channel / uploader
+            if (extractedPerformerName.isNullOrBlank()) {
+                val videoModel = initials?.optJSONObject("videoModel") ?: initials?.optJSONObject("videoEntity")
+                val authorObj = videoModel?.optJSONObject("author") ?: videoModel?.optJSONObject("channel")
+                val authorName = authorObj?.optString("name")?.trim()
+                    ?: authorObj?.optString("title")?.trim()
+                    ?: doc.selectFirst("[data-role='video-author'] a, .video-uploader a, a.entity-author-container__name")?.text()?.trim()
+
+                if (!authorName.isNullOrBlank() &&
+                    authorName.length >= 2 &&
+                    authorName.lowercase() !in blockedPerformerWords
+                ) {
+                    extractedPerformerName = authorName
+                    val authorAvatar = decodeXhamsterUrl(
+                        authorObj?.optString("thumbURL")?.ifBlank {
+                            authorObj.optString("avatarUrl").ifBlank {
+                                authorObj.optString("avatar")
+                            }
+                        }
+                    )?.takeIf { it.isNotBlank() }
+                        ?: doc.selectFirst("[data-role='video-author'] img, .video-uploader img")?.attr("src")?.takeIf {
+                            it.isNotBlank() && !it.startsWith("data:")
+                        }
+                    extractedPerformerAvatar = authorAvatar
+                }
+            }
+
+            PornhubSceneMetadata(
+                title = extractedTitle,
+                coverUrl = extractedCover,
+                uploadDateMillis = extractedDateMillis,
+                firstPerformerName = extractedPerformerName,
+                firstPerformerAvatarUrl = extractedPerformerAvatar,
+                studioName = "xHamster"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract xHamster metadata: ${e.message}", e)
+            null
         }
     }
 }

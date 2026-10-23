@@ -248,7 +248,7 @@ object VideoResolvers {
         }
     }
 
-    private fun parsePornhubDateToMillis(rawDate: String?): Long? {
+    internal fun parsePornhubDateToMillis(rawDate: String?): Long? {
         if (rawDate.isNullOrBlank()) return null
         val trimmed = rawDate.trim()
 

@@ -27,7 +27,8 @@ import com.example.ui.SortMode
 import com.example.ui.components.LinkCard
 import com.example.ui.components.SearchableTophead
 import com.example.ui.components.SkeletonCard
-import com.example.ui.components.vaultTopGlow
+import com.example.ui.components.VaultSortDropdownMenu
+import com.example.ui.components.VaultSortOption
 import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalVaultPalette
 
@@ -41,7 +42,9 @@ private val SORT_OPTIONS = listOf(
     SortOptionItem("New By Date", SortMode.CARD_NEWEST) { it == SortMode.CARD_NEWEST || it == SortMode.NEWEST },
     SortOptionItem("Old By Date", SortMode.CARD_OLDEST) { it == SortMode.CARD_OLDEST || it == SortMode.OLDEST },
     SortOptionItem("Recently Added", SortMode.RECENTLY_ADDED) { it == SortMode.RECENTLY_ADDED },
-    SortOptionItem("Oldest Added", SortMode.OLDEST_ADDED) { it == SortMode.OLDEST_ADDED }
+    SortOptionItem("Oldest Added", SortMode.OLDEST_ADDED) { it == SortMode.OLDEST_ADDED },
+    SortOptionItem("A - Z", SortMode.TITLE_AZ) { it == SortMode.TITLE_AZ },
+    SortOptionItem("Z - A", SortMode.TITLE_ZA) { it == SortMode.TITLE_ZA }
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,7 +61,7 @@ fun BookmarksScreen(
     val actors by viewModel.allActors.collectAsStateWithLifecycle()
     val studios by viewModel.allStudios.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
-    val currentSort by viewModel.sortMode.collectAsStateWithLifecycle()
+    val currentSort by viewModel.bookmarksSortMode.collectAsStateWithLifecycle()
     val resolvingStatus by viewModel.resolvingVideoStatus.collectAsStateWithLifecycle()
     val resolvingCardId by viewModel.resolvingCardId.collectAsStateWithLifecycle()
     val videoResolutionError by viewModel.videoResolutionError.collectAsStateWithLifecycle()
@@ -173,62 +176,47 @@ fun BookmarksScreen(
                 onBack = { viewModel.navigateBack() },
                 showBorder = true,
                 actions = {
-                    IconButton(
-                        onClick = { isSearchExpanded = true },
-                        modifier = Modifier.testTag("search_action_button")
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_app_search),
-                            contentDescription = "Search"
-                        )
-                    }
-
-                    Box {
+                    if (!isSearchExpanded) {
                         IconButton(
-                            onClick = { showSortMenu = true },
-                            modifier = Modifier.testTag("sort_action_button")
+                            onClick = { isSearchExpanded = true },
+                            modifier = Modifier.testTag("search_action_button")
                         ) {
                             Icon(
-                                painter = painterResource(id = R.drawable.ic_app_sort),
-                                contentDescription = "Sort Mode"
+                                painter = painterResource(id = R.drawable.ic_app_search),
+                                contentDescription = "Search",
+                                tint = palette.textPrimary
                             )
                         }
 
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false },
-                            modifier = Modifier.vaultTopGlow(cornerRadius = 16.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            containerColor = palette.cardBg
-                        ) {
-                                SORT_OPTIONS.forEach { option ->
-                                    val isSelected = option.matches(currentSort)
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                text = option.label,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSelected) accent else palette.textPrimary
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            if (isSelected) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Check,
-                                                    contentDescription = null,
-                                                    tint = accent
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            viewModel.sortMode.value = option.mode
-                                            showSortMenu = false
-                                        }
-                                    )
-                                }
+                        Box {
+                            IconButton(
+                                onClick = { showSortMenu = true },
+                                modifier = Modifier.testTag("sort_action_button")
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_app_sort),
+                                    contentDescription = "Sort Mode",
+                                    tint = palette.textPrimary
+                                )
                             }
+
+                            VaultSortDropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false },
+                                options = SORT_OPTIONS.map { option ->
+                                    VaultSortOption(
+                                        value = option.mode,
+                                        label = option.label,
+                                        isSelected = option.matches(currentSort)
+                                    )
+                                },
+                                onOptionSelected = { selectedMode ->
+                                    viewModel.bookmarksSortMode.value = selectedMode
+                                }
+                            )
                         }
                     }
+                }
             )
         }
     ) { padding ->

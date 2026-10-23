@@ -52,11 +52,11 @@ import java.util.UUID
 
 private val PrivacyScrim = Color.Black.copy(alpha = 0.75f)
 
-enum class ManagementSortOption {
-    NAME_AZ,
-    NAME_ZA,
-    NEWEST,
-    OLDEST
+enum class ManagementSortOption(val displayName: String) {
+    NAME_AZ("A - Z"),
+    NAME_ZA("Z - A"),
+    NEWEST("Recently Added"),
+    OLDEST("Oldest Added")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,7 +75,7 @@ fun ActorManagementScreen(
     val showCards = settings.showManagementCards
 
     var showAddDialog by remember { mutableStateOf(false) }
-    var sortOption by remember { mutableStateOf(ManagementSortOption.NAME_AZ) }
+    val sortOption by viewModel.actorsSortOption.collectAsStateWithLifecycle()
     var showSortMenu by remember { mutableStateOf(false) }
 
     // Search state
@@ -169,7 +169,7 @@ fun ActorManagementScreen(
                             )
                         }
 
-                        // Sort Menu Button & Dropdown
+                        // Sort Menu Button & Unified Dropdown
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -182,62 +182,20 @@ fun ActorManagementScreen(
                                 )
                             }
 
-                            DropdownMenu(
+                            com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
-                                modifier = Modifier.vaultTopGlow(cornerRadius = 16.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                containerColor = palette.cardBg
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("A - Z", color = if (sortOption == ManagementSortOption.NAME_AZ) accent else palette.textPrimary) },
-                                    leadingIcon = {
-                                        if (sortOption == ManagementSortOption.NAME_AZ) {
-                                            Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                        }
-                                    },
-                                    onClick = {
-                                        sortOption = ManagementSortOption.NAME_AZ
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Z - A", color = if (sortOption == ManagementSortOption.NAME_ZA) accent else palette.textPrimary) },
-                                    leadingIcon = {
-                                        if (sortOption == ManagementSortOption.NAME_ZA) {
-                                            Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                        }
-                                    },
-                                    onClick = {
-                                        sortOption = ManagementSortOption.NAME_ZA
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("New", color = if (sortOption == ManagementSortOption.NEWEST) accent else palette.textPrimary) },
-                                    leadingIcon = {
-                                        if (sortOption == ManagementSortOption.NEWEST) {
-                                            Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                        }
-                                    },
-                                    onClick = {
-                                        sortOption = ManagementSortOption.NEWEST
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Old", color = if (sortOption == ManagementSortOption.OLDEST) accent else palette.textPrimary) },
-                                    leadingIcon = {
-                                        if (sortOption == ManagementSortOption.OLDEST) {
-                                            Icon(Icons.Default.Check, contentDescription = null, tint = accent)
-                                        }
-                                    },
-                                    onClick = {
-                                        sortOption = ManagementSortOption.OLDEST
-                                        showSortMenu = false
-                                    }
-                                )
-                            }
+                                options = ManagementSortOption.entries.map { option ->
+                                    com.example.ui.components.VaultSortOption(
+                                        value = option,
+                                        label = option.displayName,
+                                        isSelected = sortOption == option
+                                    )
+                                },
+                                onOptionSelected = { selectedOption ->
+                                    viewModel.actorsSortOption.value = selectedOption
+                                }
+                            )
                         }
 
                         // Add Actor Button
