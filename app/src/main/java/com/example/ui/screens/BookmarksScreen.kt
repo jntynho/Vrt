@@ -314,6 +314,7 @@ fun BookmarksScreen(
                         onEnterPipInlineVideo = { pos -> viewModel.enterPipFromInline(link.id, pos) },
                         exoPlayer = if (activeInlineVideo?.cardId == link.id) viewModel.sharedPlayerManager.getPlayer() else null,
                         enableVideoPlayerGestures = settings.enableVideoPlayerGestures,
+                        lockInlinePlayerPortrait = settings.lockInlinePlayerPortrait,
                         adaptiveCoverAspectRatio = settings.adaptiveCoverAspectRatio
                     )
                 }

@@ -180,6 +180,7 @@ fun LinkCard(
     onEnterPipInlineVideo: ((positionMs: Long) -> Unit)? = null,
     exoPlayer: androidx.media3.exoplayer.ExoPlayer? = null,
     enableVideoPlayerGestures: Boolean = true,
+    lockInlinePlayerPortrait: Boolean = true,
     adaptiveCoverAspectRatio: Boolean = true,
     onImageError: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -757,6 +758,7 @@ fun LinkCard(
                         initialPositionMs = inlinePlayback.initialPositionMs,
                         exoPlayer = exoPlayer,
                         enableGestures = enableVideoPlayerGestures,
+                        lockInlinePortrait = lockInlinePlayerPortrait,
                         onClose = onCloseInlineVideo,
                         onFullscreen = onFullscreenInlineVideo,
                         onFullscreenWithMode = onFullscreenInlineVideoWithMode,

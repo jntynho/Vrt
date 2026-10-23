@@ -157,6 +157,167 @@ object SexMexScraper {
         return null
     }
 
+    // Common first/last name tokens to split unspaced single-token model slugs when context text is absent
+    private val KNOWN_NAME_TOKENS = setOf(
+        "hilary", "hillary", "rhodes", "pamela", "rios", "karely", "ruiz", "mia", "marin",
+        "alex", "coal", "luna", "bell", "bella", "violet", "myers", "veronica", "leal",
+        "daniela", "andrea", "camila", "valeria", "sofia", "sophia", "natalia", "gabriela",
+        "fernanda", "paola", "karla", "carla", "laura", "monica", "jessica", "vanessa",
+        "melissa", "stephanie", "victoria", "alejandra", "mariana", "carolina", "adriana",
+        "diana", "elena", "lucia", "sara", "sarah", "claudia", "patricia", "veronika",
+        "katya", "alison", "allison", "ashley", "amber", "amanda", "nicole", "rachel",
+        "rebecca", "samantha", "tiffany", "wendy", "yvonne", "zoe", "angie", "angel",
+        "brenda", "carmen", "cecilia", "celeste", "cynthia", "dalila", "deborah", "dulce",
+        "erika", "esmeralda", "estefania", "estrelita", "eva", "fabiola", "fatima", "florencia",
+        "genesis", "giselle", "gloria", "guadalupe", "helena", "irene", "isabella", "ivanna",
+        "jacqueline", "jimena", "ximena", "julieta", "juliana", "karen", "karina", "kimberly",
+        "leticia", "liliana", "lorena", "lourdes", "magdalena", "maite", "marcela", "margarita",
+        "maria", "marisol", "martha", "mayra", "michelle", "miriam", "nadia", "nancy", "naomi",
+        "noemi", "olga", "paloma", "pauline", "paulina", "perla", "pilar", "raquel", "regina",
+        "renata", "rocio", "rosa", "rosario", "roxana", "rubi", "ruby", "sabrina", "salma",
+        "sandra", "selena", "silvia", "sonia", "susana", "tamara", "tatiana", "teresa",
+        "valentina", "viviana", "wanda", "wendolyn", "yazmin", "yasmin", "yesenia", "yolanda",
+        "zaira", "zulema", "garcia", "martinez", "lopez", "gonzalez", "hernandez", "perez",
+        "sanchez", "ramirez", "torres", "flores", "rivera", "gomez", "diaz", "cruz", "morales",
+        "reyes", "gutierrez", "ortiz", "chavez", "ramos", "vargas", "castillo", "jimenez",
+        "moreno", "romero", "herrera", "medina", "aguilar", "vega", "castro", "mendoza",
+        "ruiz", "alvarez", "silva", "rojas", "contreras", "delgado", "cervantes", "love",
+        "star", "rose", "jade", "sky", "skye", "marie", "lynn", "lee", "mae", "rae", "ann",
+        "anne", "jane", "jean", "kay", "leigh", "lou", "sue", "joy", "grace", "faith", "hope"
+    )
+
+    private fun collapseAlphanumeric(input: String): String {
+        return input.lowercase().replace(Regex("[^a-z0-9]"), "")
+    }
+
+    private fun toCleanTitleCase(input: String): String {
+        return input.trim()
+            .replace(Regex("\\s+"), " ")
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { word ->
+                word.lowercase().replaceFirstChar { c -> c.uppercase() }
+            }
+    }
+
+    /**
+     * Normalizes a raw performer name (whether from URL slug, link text, or DB) and splits
+     * concatenated single-word names (e.g. "HILARYRHODES" or "hilaryrhodes" -> "Hilary Rhodes")
+     * using context text, lookup dictionaries, camelCase, and known name token boundaries.
+     */
+    fun normalizePerformerName(
+        rawInput: String,
+        spacedLookup: Map<String, String> = emptyMap(),
+        contextTexts: List<String> = emptyList()
+    ): String {
+        val decoded = try {
+            java.net.URLDecoder.decode(rawInput, "UTF-8")
+        } catch (_: Exception) {
+            rawInput
+        }
+
+        // 1. Replace separators and split camelCase (e.g., "HilaryRhodes" -> "Hilary Rhodes")
+        val preCleaned = decoded
+            .replace("-", " ")
+            .replace("_", " ")
+            .replace(".", " ")
+            .replace("+", " ")
+            .replace(Regex("([a-z])([A-Z])"), "$1 $2")
+            .replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1 $2")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        if (preCleaned.isEmpty()) return ""
+
+        // If it already has a space between words, format cleanly in Title Case
+        if (preCleaned.contains(" ")) {
+            return toCleanTitleCase(preCleaned)
+        }
+
+        val collapsed = collapseAlphanumeric(preCleaned)
+        if (collapsed.length < 5) {
+            return toCleanTitleCase(preCleaned)
+        }
+
+        // 2. Check page/title spaced lookup dictionary
+        spacedLookup[collapsed]?.let { matchedSpaced ->
+            if (matchedSpaced.contains(" ")) {
+                return toCleanTitleCase(matchedSpaced)
+            }
+        }
+
+        // 3. Search context texts (scene title, description, full page text) for any valid split point
+        for (i in 3..(preCleaned.length - 3)) {
+            val left = preCleaned.substring(0, i)
+            val right = preCleaned.substring(i)
+            val spacedPattern = Regex("""\b${Regex.escape(left)}[\s\-_]+${Regex.escape(right)}\b""", RegexOption.IGNORE_CASE)
+            if (contextTexts.any { ctx -> ctx.isNotBlank() && spacedPattern.containsMatchIn(ctx) }) {
+                return toCleanTitleCase("$left $right")
+            }
+        }
+
+        // 4. Check known first/last name token boundary (e.g., "hilary" + "rhodes")
+        val lower = collapsed
+        var bestSplitIndex = -1
+        var bestScore = 0
+        for (i in 3..(lower.length - 3)) {
+            val left = lower.substring(0, i)
+            val right = lower.substring(i)
+            val leftKnown = left in KNOWN_NAME_TOKENS
+            val rightKnown = right in KNOWN_NAME_TOKENS
+            val score = when {
+                leftKnown && rightKnown -> 3
+                leftKnown && left.length >= 4 -> 2
+                rightKnown && right.length >= 4 -> 2
+                else -> 0
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestSplitIndex = i
+            }
+        }
+        if (bestSplitIndex > 0) {
+            val left = lower.substring(0, bestSplitIndex)
+            val right = lower.substring(bestSplitIndex)
+            return toCleanTitleCase("$left $right")
+        }
+
+        return toCleanTitleCase(preCleaned)
+    }
+
+    private fun extractCandidateNameFromLink(
+        linkEl: org.jsoup.nodes.Element,
+        spacedLookup: Map<String, String> = emptyMap(),
+        contextTexts: List<String> = emptyList()
+    ): String? {
+        val href = linkEl.attr("href")
+        val linkText = linkEl.wholeText().replace(Regex("\\s+"), " ").trim()
+            .ifEmpty { linkEl.text().trim() }
+            .takeIf { it.length > 1 && !it.equals("models", ignoreCase = true) && !it.contains("models.html", ignoreCase = true) }
+
+        val titleAttr = linkEl.attr("title").replace(Regex("\\s+"), " ").trim()
+            .takeIf { it.length > 1 && !it.equals("models", ignoreCase = true) }
+
+        val imgAlt = linkEl.selectFirst("img")?.attr("alt")?.replace(Regex("\\s+"), " ")?.trim()
+            ?.takeIf { it.length > 1 && !it.equals("models", ignoreCase = true) }
+
+        val slugCandidate = if (href.contains("/models/", ignoreCase = true) && !href.contains("models.html", ignoreCase = true)) {
+            href.substringAfterLast("/").substringBefore(".html").substringBefore("?")
+                .takeIf { it.isNotBlank() && !it.equals("models", ignoreCase = true) }
+        } else null
+
+        val rawCandidates = listOfNotNull(linkText, titleAttr, imgAlt, slugCandidate)
+        if (rawCandidates.isEmpty()) return null
+
+        // Normalize all candidates and prefer one that resolves with a space between first & last name
+        val normalizedCandidates = rawCandidates
+            .map { normalizePerformerName(it, spacedLookup, contextTexts) }
+            .filter { it.length > 2 }
+
+        return normalizedCandidates.firstOrNull { it.contains(" ") }
+            ?: normalizedCandidates.firstOrNull()
+    }
+
     suspend fun searchSexMex(query: String): SexMexSearchResult {
         val cleanQuery = query.trim()
         if (cleanQuery.isEmpty()) return SexMexSearchResult(emptyList(), emptyList(), null)
@@ -184,45 +345,56 @@ object SexMexScraper {
             val html = NetworkClient.getHtml(searchUrl)
             if (html.isNotEmpty()) {
                 val doc = Jsoup.parse(html, searchUrl)
+                val pageText = doc.text()
+                val spacedLookup = mutableMapOf<String, String>()
+                if (cleanQuery.contains(" ")) {
+                    spacedLookup[collapseAlphanumeric(cleanQuery)] = toCleanTitleCase(cleanQuery)
+                }
 
                 // 1. Extract models matching search query
-                val modelLinks = doc.select("a[href*='/models/']")
-                val modelsMap = linkedMapOf<String, String>() // rawName to url
-                val normQuery = cleanQuery.lowercase().replace(" ", "")
+                val modelLinks = doc.select("a[href*='/models/'], a.modelnamesut")
+                val modelsMap = linkedMapOf<String, Pair<String, String>>() // collapsedName -> (displayName, url)
+                val normQuery = collapseAlphanumeric(cleanQuery)
 
                 for (link in modelLinks) {
                     val href = link.attr("href")
-                    if (href.contains("models.html", ignoreCase = true)) continue
-                    val name = link.text().trim()
-                    if (name.length > 1) {
-                        val normName = name.lowercase().replace(" ", "")
-                        if (normName.contains(normQuery) || normQuery.contains(normName)) {
-                            val fullUrl = normalizeUrl(href) ?: continue
-                            if (!modelsMap.containsKey(name.lowercase())) {
-                                modelsMap[name.lowercase()] = fullUrl
-                            }
+                    if (href.contains("models.html", ignoreCase = true) || href.contains("/updates/", ignoreCase = true)) continue
+                    val resolvedName = extractCandidateNameFromLink(link, spacedLookup, listOf(cleanQuery, pageText)) ?: continue
+                    val normName = collapseAlphanumeric(resolvedName)
+                    if (normName.length > 1 && (normName.contains(normQuery) || normQuery.contains(normName))) {
+                        val fullUrl = normalizeUrl(href) ?: continue
+                        val existing = modelsMap[normName]
+                        if (existing == null || (!existing.first.contains(" ") && resolvedName.contains(" "))) {
+                            modelsMap[normName] = Pair(resolvedName, fullUrl)
+                        }
+                        if (resolvedName.contains(" ")) {
+                            spacedLookup[normName] = resolvedName
                         }
                     }
                 }
 
-                val topModels = modelsMap.entries.take(6).toList()
+                val topModels = modelsMap.values.take(6).toList()
 
                 if (topModels.isNotEmpty()) {
                     val result = coroutineScope {
                         // Launch parallel avatar fetching for all matched models
-                        val modelsDeferred = topModels.map { (rawName, modelUrl) ->
+                        val modelsDeferred = topModels.map { (displayName, modelUrl) ->
                             async(Dispatchers.IO) {
-                                val modelName = modelUrl.substringAfterLast("/").substringBefore(".html")
-                                    .replace(Regex("([a-z])([A-Z])"), "$1 $2")
-                                    .replace("-", " ")
-                                    .trim()
-                                    .split(" ")
-                                    .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                                val slugName = modelUrl.substringAfterLast("/").substringBefore(".html").substringBefore("?")
+                                val bestModelName = if (displayName.contains(" ")) {
+                                    displayName
+                                } else {
+                                    normalizePerformerName(
+                                        rawInput = slugName.ifBlank { displayName },
+                                        spacedLookup = spacedLookup,
+                                        contextTexts = listOf(displayName, cleanQuery, pageText)
+                                    )
+                                }
 
-                                val avatarUrl = fetchModelAvatarFast(modelUrl, modelName)
+                                val avatarUrl = fetchModelAvatarFast(modelUrl, bestModelName)
                                 StashPerformer(
                                     id = modelUrl,
-                                    name = if (modelName.isNotBlank()) modelName else rawName.replaceFirstChar { it.uppercase() },
+                                    name = bestModelName.ifBlank { toCleanTitleCase(displayName) },
                                     gender = "FEMALE",
                                     imageUrl = avatarUrl
                                 )
@@ -230,7 +402,7 @@ object SexMexScraper {
                         }
 
                         // Concurrently fetch the first model's scenes in the SAME parallel batch
-                        val firstModelUrl = topModels.first().value
+                        val firstModelUrl = topModels.first().second
                         val firstModelScenesDeferred = async(Dispatchers.IO) {
                             scrapeSexMexPageWithPagination(firstModelUrl)
                         }
@@ -365,6 +537,31 @@ object SexMexScraper {
         val scenes = mutableListOf<StashScene>()
         val updateLinks = doc.select("a[href*='/updates/'], a[href*='/tour/updates/']")
         val seenUrls = mutableSetOf<String>()
+        val pageText = doc.text()
+
+        // Build a page-wide lookup of spaced model names -> collapsed alphanumeric key
+        val pageSpacedLookup = mutableMapOf<String, String>()
+        for (modelEl in doc.select("a[href*='/models/'], a.modelnamesut")) {
+            val candidates = listOf(
+                modelEl.text().trim(),
+                modelEl.attr("title").trim(),
+                modelEl.selectFirst("img")?.attr("alt")?.trim().orEmpty()
+            )
+            for (cand in candidates) {
+                if (cand.contains(" ") && cand.length in 4..45 && !cand.contains("Models", ignoreCase = true)) {
+                    val splitParts = cand.split(Regex(",|\\s+&\\s+|\\s+and\\s+|\\s+And\\s+|\\s+feat\\.?\\s+|\\s*-\\s*"))
+                    for (part in splitParts) {
+                        val trimmed = part.trim()
+                        if (trimmed.contains(" ") && trimmed.length in 4..35) {
+                            val key = collapseAlphanumeric(trimmed)
+                            if (key.length >= 4) {
+                                pageSpacedLookup[key] = toCleanTitleCase(trimmed)
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         for (link in updateLinks) {
             val rawHref = link.attr("abs:href").ifEmpty { link.attr("href") }
@@ -482,6 +679,28 @@ object SexMexScraper {
                 dateStr = extractedDateFromTitle
             }
 
+            // Enrich lookup with spaced actor names found in the scene's title parts
+            val cardSpacedLookup = HashMap(pageSpacedLookup)
+            for (actorPart in actorsFromTitleList) {
+                val splitActors = actorPart.split(Regex(",|\\s+&\\s+|\\s+and\\s+|\\s+And\\s+"))
+                for (a in splitActors) {
+                    val trimmed = a.trim()
+                    if (trimmed.contains(" ") && !trimmed.equals(cleanTitle, ignoreCase = true)) {
+                        val key = collapseAlphanumeric(trimmed)
+                        if (key.length >= 4) {
+                            cardSpacedLookup[key] = toCleanTitleCase(trimmed)
+                        }
+                    }
+                }
+            }
+
+            val cardContextTexts = buildList {
+                if (rawTitle.isNotBlank()) add(rawTitle)
+                if (!descr.isNullOrBlank()) add(descr)
+                if (container != null) add(container.text())
+                add(pageText)
+            }
+
             // Performers in scene - strict filter to exclude any scene update links (/updates/)
             val performerElements = container?.select("a[href*='/models/'], a.modelnamesut")
                 ?.filter { el ->
@@ -490,53 +709,51 @@ object SexMexScraper {
                 } ?: emptyList()
 
             val performersList = mutableListOf<String>()
-            for (linkEl in performerElements) {
-                val href = linkEl.attr("href")
-                val rawName = if (href.contains("/models/", ignoreCase = true) && !href.contains("models.html", ignoreCase = true)) {
-                    val modelId = href.substringAfterLast("/").substringBefore(".html").substringBefore("?")
-                    if (modelId.isNotBlank() && !modelId.equals("models", ignoreCase = true)) {
-                        modelId.replace("-", " ")
-                            .replace("_", " ")
-                            .replace(Regex("([a-z])([A-Z])"), "$1 $2")
-                            .split(" ")
-                            .filter { it.isNotBlank() }
-                            .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                            .trim()
-                    } else {
-                        null
-                    }
-                } else {
-                    val text = linkEl.text().trim()
-                    if (text.isNotEmpty() && !text.contains("Models", ignoreCase = true)) {
-                        text
-                    } else {
-                        null
-                    }
-                }
+            val seenPerformerKeys = mutableSetOf<String>()
 
-                if (!rawName.isNullOrBlank()) {
-                    // Split by comma, " & ", " and ", or " And " to handle multiple performers listed together
-                    val splitNames = rawName.split(Regex(",|\\s+&\\s+|\\s+and\\s+|\\s+And\\s+"))
-                    for (name in splitNames) {
-                        val cleanName = name.trim()
-                        if (cleanName.isNotBlank() && cleanName.length > 2) {
-                            performersList.add(cleanName)
-                        }
-                    }
-                }
-            }
-
-            // Fallback performers: if links didn't give us performers, use those parsed from the title separator
-            if (performersList.isEmpty()) {
-                for (name in actorsFromTitleList) {
-                    val cleanName = name.trim()
-                    if (cleanName.isNotBlank() && cleanName.length > 2 && !cleanName.equals(cleanTitle, ignoreCase = true)) {
+            fun addNormalizedPerformer(rawCandidate: String) {
+                val splitNames = rawCandidate.split(Regex(",|\\s+&\\s+|\\s+and\\s+|\\s+And\\s+"))
+                for (name in splitNames) {
+                    val cleanName = normalizePerformerName(
+                        rawInput = name.trim(),
+                        spacedLookup = cardSpacedLookup,
+                        contextTexts = cardContextTexts
+                    )
+                    val key = collapseAlphanumeric(cleanName)
+                    if (
+                        cleanName.isNotBlank() &&
+                        cleanName.length > 2 &&
+                        key.length >= 3 &&
+                        !cleanName.equals(cleanTitle, ignoreCase = true) &&
+                        !cleanName.equals("Models", ignoreCase = true) &&
+                        seenPerformerKeys.add(key)
+                    ) {
                         performersList.add(cleanName)
                     }
                 }
             }
 
-            val performers = performersList.distinct().map {
+            for (linkEl in performerElements) {
+                val rawName = extractCandidateNameFromLink(
+                    linkEl = linkEl,
+                    spacedLookup = cardSpacedLookup,
+                    contextTexts = cardContextTexts
+                )
+                if (!rawName.isNullOrBlank()) {
+                    addNormalizedPerformer(rawName)
+                }
+            }
+
+            // Also check performers parsed from the title separator (in case links were missing or incomplete)
+            if (performersList.isEmpty()) {
+                for (name in actorsFromTitleList) {
+                    if (!name.trim().equals(cleanTitle, ignoreCase = true)) {
+                        addNormalizedPerformer(name)
+                    }
+                }
+            }
+
+            val performers = performersList.map {
                 val slug = it.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
                 StashPerformer(
                     id = "sexmex:${slug.ifBlank { UUID.randomUUID().toString() }}",

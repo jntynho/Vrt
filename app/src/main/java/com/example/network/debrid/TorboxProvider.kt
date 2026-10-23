@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.network.NetworkClient
 import com.example.network.await
 import com.example.network.torrent.MagnetParser
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -29,6 +30,17 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
         fun invalidateHash(hash: String?) {
             if (!hash.isNullOrBlank()) {
                 cacheCheckResults.remove(hash.lowercase().trim())
+            }
+        }
+
+        private fun formatSpeed(bytesPerSec: Long): String {
+            if (bytesPerSec <= 0L) return "0 KB/s"
+            val mb = bytesPerSec / (1024.0 * 1024.0)
+            return if (mb >= 1.0) {
+                String.format(Locale.US, "%.1f MB/s", mb)
+            } else {
+                val kb = bytesPerSec / 1024.0
+                String.format(Locale.US, "%.0f KB/s", kb)
             }
         }
     }
@@ -111,7 +123,12 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
         CacheState.UNKNOWN
     }
 
-    override suspend fun resolveStream(magnetOrQuery: String, episodeHint: String?): DebridResult = withContext(Dispatchers.IO) {
+    override suspend fun resolveStream(
+        magnetOrQuery: String,
+        episodeHint: String?,
+        allowUncachedDownload: Boolean,
+        onProgressUpdate: ((String) -> Unit)?
+    ): DebridResult = withContext(Dispatchers.IO) {
         val key = apiKeyProvider().trim()
         if (key.isEmpty()) {
             return@withContext DebridResult.Error(
@@ -137,7 +154,9 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
             MagnetParser.toCanonicalMagnet(infoHash!!)
         }
 
-        if (infoHash != null) {
+        // Only short-circuit on NOT_CACHED during Phase 1 fast cache probes!
+        // When allowUncachedDownload == true, we proceed to add/download the torrent on TorBox cloud.
+        if (!allowUncachedDownload && infoHash != null) {
             val cacheState = checkCache(infoHash)
             if (cacheState == CacheState.NOT_CACHED) {
                 return@withContext DebridResult.Error(
@@ -150,129 +169,164 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
 
         var torrentId: String? = null
         var isExisting = false
+        var keepCloudDownloadAlive = false
 
         try {
-            Log.d(tag, "[TORBOX] Resolving stream...")
+            Log.d(tag, "[TORBOX] Resolving stream (allowUncachedDownload=$allowUncachedDownload)...")
+
+            // Check if this torrent is already in mylist (either ready or actively downloading)
+            if (infoHash != null) {
+                val existingId = findInMyList(infoHash, key, allowDownloading = allowUncachedDownload)
+                if (!existingId.isNullOrEmpty()) {
+                    torrentId = existingId
+                    isExisting = true
+                    Log.d(tag, "[TORBOX] Reusing existing torrent in mylist: $existingId")
+                }
+            }
 
             var selectedFileId: String? = null
             var filename: String? = null
             var sizeBytes: Long? = null
             var isTorrentReady = false
-
-            // Step 1: Add torrent (add_only_if_cached avoids starting uncached background downloads when supported)
-            val formBody = FormBody.Builder()
-                .add("magnet", canonicalMagnet)
-                .add("seed", "1")
-                .add("allow_zip", "false")
-                .build()
-
-            val createReq = Request.Builder()
-                .url("$baseUrl/torrents/createtorrent")
-                .header("Authorization", "Bearer $key")
-                .post(formBody)
-                .build()
-
-            val createResp = NetworkClient.apiClient.newCall(createReq).await()
-            val createBody = createResp.body?.string().orEmpty()
-            val createCode = createResp.code
-            createResp.close()
-
-            if (createCode in listOf(401, 403)) {
-                return@withContext DebridResult.Error(
-                    type = DebridErrorType.InvalidKey,
-                    message = "Torbox API key is invalid.",
-                    statusCode = createCode,
-                    providerName = name
-                )
-            }
-
             var createErrorDetail = ""
             var createErrorCode = ""
+            var createCode = 200
 
-            if (createBody.isNotEmpty()) {
-                val createJson = try { JSONObject(createBody) } catch (_: Exception) { JSONObject() }
-                val isSuccess = createJson.optBoolean("success", createCode in 200..299)
-                createErrorCode = createJson.optString("error", "")
-                createErrorDetail = createJson.optString("detail", "")
+            // Step 1: Add torrent if not already present in mylist
+            if (torrentId.isNullOrEmpty()) {
+                val formBody = FormBody.Builder()
+                    .add("magnet", canonicalMagnet)
+                    .add("seed", "1")
+                    .add("allow_zip", "false")
+                    .build()
 
-                if (!isSuccess && createErrorCode.isNotEmpty()) {
-                    val classified = classifyTorboxError(createCode, createErrorCode, createErrorDetail)
-                    if (classified in listOf(DebridErrorType.InvalidKey, DebridErrorType.NotPremium, DebridErrorType.AccountLimit, DebridErrorType.RateLimited)) {
-                        // Before failing on ACTIVE_LIMIT, check if this exact torrent is already in mylist
-                        val existingId = if (infoHash != null) findInMyList(infoHash, key) else null
-                        if (!existingId.isNullOrEmpty()) {
-                            torrentId = existingId
-                            isExisting = true
-                        } else {
-                            return@withContext DebridResult.Error(
-                                type = classified,
-                                message = createErrorDetail.ifEmpty { "Torbox error: $createErrorCode" },
-                                statusCode = createCode,
-                                providerName = name
-                            )
-                        }
-                    }
+                val createReq = Request.Builder()
+                    .url("$baseUrl/torrents/createtorrent")
+                    .header("Authorization", "Bearer $key")
+                    .post(formBody)
+                    .build()
+
+                val createResp = NetworkClient.apiClient.newCall(createReq).await()
+                val createBody = createResp.body?.string().orEmpty()
+                createCode = createResp.code
+                createResp.close()
+
+                if (createCode in listOf(401, 403)) {
+                    return@withContext DebridResult.Error(
+                        type = DebridErrorType.InvalidKey,
+                        message = "Torbox API key is invalid.",
+                        statusCode = createCode,
+                        providerName = name
+                    )
                 }
 
-                val dataObj = createJson.optJSONObject("data")
-                if (dataObj != null) {
-                    torrentId = dataObj.optString("torrent_id", dataObj.optString("id", ""))
-                    if (torrentId.isEmpty()) {
-                        val qId = dataObj.opt("queued_id")?.toString()
-                        if (!qId.isNullOrEmpty() && qId != "null") {
-                            // If TorBox queued it instead of returning a ready torrent_id, it's not cached!
-                            if (infoHash != null) {
-                                cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                if (createBody.isNotEmpty()) {
+                    val createJson = try { JSONObject(createBody) } catch (_: Exception) { JSONObject() }
+                    val isSuccess = createJson.optBoolean("success", createCode in 200..299)
+                    createErrorCode = createJson.optString("error", "")
+                    createErrorDetail = createJson.optString("detail", "")
+
+                    if (!isSuccess && createErrorCode.isNotEmpty()) {
+                        val classified = classifyTorboxError(createCode, createErrorCode, createErrorDetail)
+                        if (classified in listOf(DebridErrorType.InvalidKey, DebridErrorType.NotPremium, DebridErrorType.AccountLimit, DebridErrorType.RateLimited)) {
+                            val existingId = if (infoHash != null) findInMyList(infoHash, key, allowDownloading = allowUncachedDownload) else null
+                            if (!existingId.isNullOrEmpty()) {
+                                torrentId = existingId
+                                isExisting = true
+                            } else {
+                                return@withContext DebridResult.Error(
+                                    type = classified,
+                                    message = createErrorDetail.ifEmpty { "Torbox error: $createErrorCode" },
+                                    statusCode = createCode,
+                                    providerName = name
+                                )
                             }
-                            return@withContext DebridResult.Error(
-                                type = DebridErrorType.NotCached,
-                                message = "Torrent was queued (not cached) on Torbox.",
-                                providerName = name
-                            )
                         }
                     }
 
-                    // Fast-path: Check if cached files array was already returned directly in createtorrent response
-                    val directFilesArr = dataObj.optJSONArray("files")
-                    val isCachedReply = createErrorDetail.contains("cached", ignoreCase = true) || isTorrentObjectReady(dataObj)
-                    if (directFilesArr != null && directFilesArr.length() > 0 && isCachedReply) {
-                        val fileList = mutableListOf<DebridFileInfo>()
-                        for (i in 0 until directFilesArr.length()) {
-                            val fObj = directFilesArr.optJSONObject(i) ?: continue
-                            val fId = fObj.opt("id")?.toString() ?: i.toString()
-                            val fName = fObj.optString("name", fObj.optString("short_name", ""))
-                            val fSize = fObj.optLong("size", fObj.optLong("bytes", 0L))
-                            fileList.add(DebridFileInfo(fId, fName, fSize))
+                    val dataObj = createJson.optJSONObject("data")
+                    if (dataObj != null) {
+                        torrentId = dataObj.optString("torrent_id", dataObj.optString("id", ""))
+                        if (torrentId.isEmpty()) {
+                            val qId = dataObj.opt("queued_id")?.toString()
+                            if (!qId.isNullOrEmpty() && qId != "null") {
+                                if (!allowUncachedDownload) {
+                                    if (infoHash != null) {
+                                        cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                                    }
+                                    return@withContext DebridResult.Error(
+                                        type = DebridErrorType.NotCached,
+                                        message = "Torrent was queued (not cached) on Torbox.",
+                                        providerName = name
+                                    )
+                                } else {
+                                    // Active Cloud Download Mode: Wait briefly to see if TorBox promotes queued_id into mylist
+                                    keepCloudDownloadAlive = true
+                                    onProgressUpdate?.invoke("Torbox Cloud: Queued torrent for download (Queue ID #$qId)...")
+                                    if (infoHash != null) {
+                                        cacheCheckResults.remove(infoHash)
+                                        for (attempt in 1..6) {
+                                            delay(1500L)
+                                            val promotedId = findInMyList(infoHash, key, allowDownloading = true)
+                                            if (!promotedId.isNullOrEmpty()) {
+                                                torrentId = promotedId
+                                                break
+                                            }
+                                        }
+                                    }
+                                    if (torrentId.isNullOrEmpty()) {
+                                        return@withContext DebridResult.Error(
+                                            type = DebridErrorType.NotCached,
+                                            message = "Torrent has been added to your Torbox Cloud download queue (Queue #$qId). It is downloading in the background—tap Play again shortly once finished.",
+                                            providerName = name
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        val bestFile = VideoFilePicker.pickBestVideoFile(fileList, episodeHint)
-                        if (bestFile != null) {
-                            selectedFileId = bestFile.id
-                            filename = bestFile.name
-                            sizeBytes = bestFile.sizeBytes
-                            isTorrentReady = true
+
+                        // Fast-path: Check if cached files array was already returned directly in createtorrent response
+                        val directFilesArr = dataObj.optJSONArray("files")
+                        val isCachedReply = createErrorDetail.contains("cached", ignoreCase = true) || isTorrentObjectReady(dataObj)
+                        if (directFilesArr != null && directFilesArr.length() > 0 && isCachedReply) {
+                            val fileList = mutableListOf<DebridFileInfo>()
+                            for (i in 0 until directFilesArr.length()) {
+                                val fObj = directFilesArr.optJSONObject(i) ?: continue
+                                val fId = fObj.opt("id")?.toString() ?: i.toString()
+                                val fName = fObj.optString("name", fObj.optString("short_name", ""))
+                                val fSize = fObj.optLong("size", fObj.optLong("bytes", 0L))
+                                fileList.add(DebridFileInfo(fId, fName, fSize))
+                            }
+                            val bestFile = VideoFilePicker.pickBestVideoFile(fileList, episodeHint)
+                            if (bestFile != null) {
+                                selectedFileId = bestFile.id
+                                filename = bestFile.name
+                                sizeBytes = bestFile.sizeBytes
+                                isTorrentReady = true
+                            }
+                        }
+                    } else if (torrentId.isNullOrEmpty()) {
+                        val simpleId = createJson.optString("torrent_id", createJson.optString("id", ""))
+                        if (simpleId.isNotEmpty()) torrentId = simpleId
+                    }
+
+                    // Check detail message if torrent already existed
+                    if (torrentId.isNullOrEmpty() && createErrorDetail.isNotEmpty()) {
+                        val match = Regex("""(?:torrent_id|id)[^0-9]*([0-9]+)""", RegexOption.IGNORE_CASE).find(createErrorDetail)
+                        if (match != null) {
+                            torrentId = match.groupValues[1]
+                            isExisting = true
                         }
                     }
-                } else if (torrentId.isNullOrEmpty()) {
-                    val simpleId = createJson.optString("torrent_id", createJson.optString("id", ""))
-                    if (simpleId.isNotEmpty()) torrentId = simpleId
                 }
 
-                // Check detail message if torrent already existed
-                if (torrentId.isNullOrEmpty() && createErrorDetail.isNotEmpty()) {
-                    val match = Regex("""(?:torrent_id|id)[^0-9]*([0-9]+)""", RegexOption.IGNORE_CASE).find(createErrorDetail)
-                    if (match != null) {
-                        torrentId = match.groupValues[1]
+                // Fallback search in mylist if torrentId was not directly returned
+                if (torrentId.isNullOrEmpty() && infoHash != null) {
+                    val foundId = findInMyList(infoHash, key, allowDownloading = allowUncachedDownload)
+                    if (!foundId.isNullOrEmpty()) {
+                        torrentId = foundId
                         isExisting = true
                     }
-                }
-            }
-
-            // Fallback search in mylist if torrentId was not directly returned
-            if (torrentId.isNullOrEmpty() && infoHash != null) {
-                val foundId = findInMyList(infoHash, key)
-                if (!foundId.isNullOrEmpty()) {
-                    torrentId = foundId
-                    isExisting = true
                 }
             }
 
@@ -285,11 +339,17 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
                 )
             }
 
-            // Step 2: Poll mylist?id=$torrentId&bypass_cache=true and verify readiness before selecting file
+            // Step 2: Poll mylist?id=$torrentId&bypass_cache=true and verify readiness (or track active cloud download)
+            var lastProgressPct = 0.0
+            var lastSpeed = 0L
+            var lastSeeds = 0
+
             if (selectedFileId == null || !isTorrentReady) {
                 val startTime = System.currentTimeMillis()
+                val totalTimeoutMs = if (allowUncachedDownload) 38_000L else 12_000L
                 var torboxPollDelay = 80L
-                while (System.currentTimeMillis() - startTime < 12_000L) {
+
+                while (System.currentTimeMillis() - startTime < totalTimeoutMs) {
                     val infoReq = Request.Builder()
                         .url("$baseUrl/torrents/mylist?id=$torrentId&bypass_cache=true")
                         .header("Authorization", "Bearer $key")
@@ -336,19 +396,76 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
                                     }
                                     break
                                 }
-                            } else if (isTorrentObjectActivelyUncached(torrentObj) && (System.currentTimeMillis() - startTime > 1500L)) {
-                                // Fast-fail and clean up uncached torrent so we don't leak active slots
-                                if (infoHash != null) {
-                                    cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                            } else if (isTorrentObjectActivelyUncached(torrentObj)) {
+                                val elapsedTime = System.currentTimeMillis() - startTime
+                                val rawProg = torrentObj.optDouble("progress", 0.0)
+                                val pct = if (rawProg <= 1.0) (rawProg * 100.0).coerceIn(0.0, 100.0) else rawProg.coerceIn(0.0, 100.0)
+                                val speed = torrentObj.optLong("download_speed", 0L)
+                                val seeds = torrentObj.optInt("seeds", torrentObj.optInt("seeders", 0))
+                                val dlState = torrentObj.optString("download_state", "downloading").lowercase().trim()
+
+                                lastProgressPct = pct
+                                lastSpeed = speed
+                                lastSeeds = seeds
+
+                                if (!allowUncachedDownload) {
+                                    if (elapsedTime > 1500L) {
+                                        if (infoHash != null) {
+                                            cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
+                                        }
+                                        withContext(NonCancellable) {
+                                            if (!isExisting) {
+                                                deleteTorrent(torrentId, key)
+                                            }
+                                        }
+                                        return@withContext DebridResult.Error(
+                                            type = DebridErrorType.NotCached,
+                                            message = "Torrent is not cached on Torbox.",
+                                            providerName = name
+                                        )
+                                    }
+                                } else {
+                                    // Active Cloud Download Mode on TorBox: Keep torrent alive and report progress!
+                                    keepCloudDownloadAlive = true
+                                    if (infoHash != null) {
+                                        cacheCheckResults.remove(infoHash)
+                                    }
+
+                                    if (dlState in listOf("error", "missingfiles")) {
+                                        keepCloudDownloadAlive = false
+                                        withContext(NonCancellable) {
+                                            deleteTorrent(torrentId, key)
+                                        }
+                                        return@withContext DebridResult.Error(
+                                            type = DebridErrorType.NotCached,
+                                            message = "Torbox torrent download failed ($dlState).",
+                                            providerName = name
+                                        )
+                                    }
+
+                                    val liveMsg = when (dlState) {
+                                        "metadl", "allocating", "checkingdl" -> "Torbox Cloud: Fetching torrent metadata ($seeds Seeds)..."
+                                        "queued" -> "Torbox Cloud: Queued for download (${pct.toInt()}%)..."
+                                        else -> "Downloading to Torbox Cloud: ${String.format(Locale.US, "%.1f", pct)}% • ${formatSpeed(speed)} • $seeds Seeds"
+                                    }
+                                    onProgressUpdate?.invoke(liveMsg)
+
+                                    // Dead torrent protection: 0% progress, 0 seeds, 0 speed after 18s
+                                    if (elapsedTime > 18_000L && pct <= 0.0 && seeds <= 0 && speed <= 0L && dlState in listOf("stalleddl", "metadl")) {
+                                        keepCloudDownloadAlive = false
+                                        withContext(NonCancellable) {
+                                            deleteTorrent(torrentId, key)
+                                        }
+                                        return@withContext DebridResult.Error(
+                                            type = DebridErrorType.NotCached,
+                                            message = "Torrent has 0 active seeders and could not start downloading on Torbox.",
+                                            providerName = name
+                                        )
+                                    }
+
+                                    delay(1000L)
+                                    continue
                                 }
-                                withContext(NonCancellable) {
-                                    deleteTorrent(torrentId, key)
-                                }
-                                return@withContext DebridResult.Error(
-                                    type = DebridErrorType.NotCached,
-                                    message = "Torrent is not cached on Torbox.",
-                                    providerName = name
-                                )
                             }
                         }
                     }
@@ -363,6 +480,16 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
 
             // Guard Clause: Do not call requestdl if torrent is not ready or no video file was selected
             if (!isTorrentReady || selectedFileId.isNullOrEmpty()) {
+                if (allowUncachedDownload && keepCloudDownloadAlive) {
+                    val pctStr = String.format(Locale.US, "%.1f", lastProgressPct)
+                    val speedStr = formatSpeed(lastSpeed)
+                    return@withContext DebridResult.Error(
+                        type = DebridErrorType.NotCached,
+                        message = "Cloud download started on Torbox ($pctStr% • $speedStr • $lastSeeds Seeds). It is continuing in the background—tap Play again shortly once finished.",
+                        providerName = name
+                    )
+                }
+
                 if (infoHash != null) {
                     cacheCheckResults[infoHash] = Pair(System.currentTimeMillis(), CacheState.NOT_CACHED)
                 }
@@ -436,7 +563,7 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) {
                 withContext(NonCancellable) {
-                    if (!isExisting) {
+                    if (!isExisting && !keepCloudDownloadAlive) {
                         deleteTorrent(torrentId, key)
                     }
                 }
@@ -451,7 +578,11 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
         }
     }
 
-    private suspend fun findInMyList(infoHash: String, key: String): String? {
+    private suspend fun findInMyList(
+        infoHash: String,
+        key: String,
+        allowDownloading: Boolean = true
+    ): String? {
         try {
             val listUrl = "$baseUrl/torrents/mylist?bypass_cache=true"
             val listReq = Request.Builder()
@@ -473,10 +604,12 @@ class TorboxProvider(private val apiKeyProvider: () -> String) : DebridProvider 
                         if (itemHash == infoHash.lowercase()) {
                             val id = item.optString("torrent_id", item.optString("id", ""))
                             if (id.isNotEmpty()) {
+                                val dlState = item.optString("download_state", "").lowercase().trim()
                                 if (isTorrentObjectReady(item)) {
                                     return id
-                                } else {
-                                    // Clean up stalled uncached entry so it doesn't block active slots
+                                } else if (allowDownloading && dlState !in listOf("error", "missingfiles")) {
+                                    return id
+                                } else if (dlState in listOf("error", "missingfiles")) {
                                     deleteTorrent(id, key)
                                 }
                             }

@@ -16,7 +16,7 @@ import com.example.data.local.entity.*
         StudioEntity::class,
         SettingsEntity::class
     ],
-    version = 21,
+    version = 22,
     exportSchema = false
 )
 @TypeConverters(RoomConverters::class)
@@ -153,6 +153,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_21_22 = object : androidx.room.migration.Migration(21, 22) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE app_settings ADD COLUMN lockInlinePlayerPortrait INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -170,7 +176,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_17_18,
                         MIGRATION_18_19,
                         MIGRATION_19_20,
-                        MIGRATION_20_21
+                        MIGRATION_20_21,
+                        MIGRATION_21_22
                     )
                     .fallbackToDestructiveMigration(true)
                     .build()

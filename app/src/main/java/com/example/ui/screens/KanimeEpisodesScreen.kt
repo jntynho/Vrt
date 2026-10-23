@@ -40,11 +40,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -467,29 +473,120 @@ fun KanimeEpisodesScreen(
                                 )
                             }
                         } else {
-                            Text(
-                                text = displayDescription,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontSize = 13.5.sp,
-                                    lineHeight = 20.sp
-                                ),
-                                color = palette.textPrimary.copy(alpha = 0.88f),
-                                maxLines = if (isDescriptionExpanded) Int.MAX_VALUE else 3,
-                                overflow = TextOverflow.Ellipsis,
-                                onTextLayout = { layoutResult ->
-                                    if (!isDescriptionExpanded) {
-                                        isDescriptionOverflowing = layoutResult.hasVisualOverflow
+                            val descStyle = MaterialTheme.typography.bodyMedium.copy(
+                                fontSize = 13.5.sp,
+                                lineHeight = 20.sp
+                            )
+                            val textMeasurer = rememberTextMeasurer()
+                            val bodyColor = palette.textPrimary.copy(alpha = 0.88f)
+                            val seeMoreSuffix = " See More..."
+
+                            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                                val maxWidthPx = constraints.maxWidth
+                                val (collapsedAnnotatedText, overflowsThreeLines) = remember(
+                                    displayDescription,
+                                    maxWidthPx,
+                                    descStyle,
+                                    bodyColor,
+                                    accent
+                                ) {
+                                    if (maxWidthPx <= 0 || displayDescription.isBlank()) {
+                                        AnnotatedString(displayDescription) to false
+                                    } else {
+                                        val fullLayout = textMeasurer.measure(
+                                            text = AnnotatedString(displayDescription),
+                                            style = descStyle,
+                                            constraints = Constraints(maxWidth = maxWidthPx)
+                                        )
+                                        if (fullLayout.lineCount <= 3) {
+                                            buildAnnotatedString {
+                                                withStyle(SpanStyle(color = bodyColor)) {
+                                                    append(displayDescription)
+                                                }
+                                            } to false
+                                        } else {
+                                            val line3End = fullLayout.getLineEnd(2, visibleEnd = true)
+                                                .coerceAtMost(displayDescription.length)
+                                            var low = 0
+                                            var high = line3End
+                                            var bestCut = (line3End - seeMoreSuffix.length).coerceAtLeast(0)
+
+                                            while (low <= high) {
+                                                val mid = (low + high) ushr 1
+                                                val candidatePrefix = displayDescription.substring(0, mid)
+                                                    .trimEnd(' ', '\t', '\n', '.', ',', ';', ':', '-', '—')
+                                                val candidateAnnotated = buildAnnotatedString {
+                                                    withStyle(SpanStyle(color = bodyColor)) {
+                                                        append(candidatePrefix)
+                                                    }
+                                                    withStyle(
+                                                        SpanStyle(
+                                                            color = accent,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                    ) {
+                                                        append(seeMoreSuffix)
+                                                    }
+                                                }
+                                                val candidateLayout = textMeasurer.measure(
+                                                    text = candidateAnnotated,
+                                                    style = descStyle,
+                                                    constraints = Constraints(maxWidth = maxWidthPx)
+                                                )
+                                                if (candidateLayout.lineCount <= 3) {
+                                                    bestCut = mid
+                                                    low = mid + 1
+                                                } else {
+                                                    high = mid - 1
+                                                }
+                                            }
+
+                                            // Snap back to word boundary if a space is nearby so words aren't cut mid-character
+                                            val rawCutPrefix = displayDescription.substring(0, bestCut)
+                                            val lastSpaceIdx = rawCutPrefix.lastIndexOf(' ')
+                                            val cleanPrefix = if (lastSpaceIdx > bestCut - 10 && lastSpaceIdx > 0) {
+                                                rawCutPrefix.substring(0, lastSpaceIdx)
+                                            } else {
+                                                rawCutPrefix
+                                            }.trimEnd(' ', '\t', '\n', '.', ',', ';', ':', '-', '—')
+
+                                            val annotated = buildAnnotatedString {
+                                                withStyle(SpanStyle(color = bodyColor)) {
+                                                    append(cleanPrefix)
+                                                }
+                                                withStyle(
+                                                    SpanStyle(
+                                                        color = accent,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                ) {
+                                                    append(seeMoreSuffix)
+                                                }
+                                            }
+                                            annotated to true
+                                        }
                                     }
                                 }
-                            )
 
-                            if (!isDescriptionExpanded && isDescriptionOverflowing) {
-                                Text(
-                                    text = "Tap to read more...",
-                                    fontSize = 11.5.sp,
-                                    color = accent.copy(alpha = 0.85f),
-                                    fontWeight = FontWeight.Medium
-                                )
+                                SideEffect {
+                                    if (isDescriptionOverflowing != overflowsThreeLines) {
+                                        isDescriptionOverflowing = overflowsThreeLines
+                                    }
+                                }
+
+                                if (isDescriptionExpanded || !overflowsThreeLines) {
+                                    Text(
+                                        text = displayDescription,
+                                        style = descStyle,
+                                        color = bodyColor
+                                    )
+                                } else {
+                                    Text(
+                                        text = collapsedAnnotatedText,
+                                        style = descStyle,
+                                        maxLines = 3
+                                    )
+                                }
                             }
                         }
                     }

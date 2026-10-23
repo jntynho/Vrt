@@ -79,6 +79,7 @@ data class SettingsEntity(
     val adaptiveCoverAspectRatio: Boolean = true,
     val showManagementCards: Boolean = true,
     val enableVideoPlayerGestures: Boolean = true,
+    val lockInlinePlayerPortrait: Boolean = true,
     val transitionStyle: Int = 0,
     val lastSyncTime: Long = 0L,
     val defaultKeysSeeded: Boolean = false,

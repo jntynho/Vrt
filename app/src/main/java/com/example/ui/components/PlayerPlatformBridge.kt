@@ -135,10 +135,22 @@ fun checkIsVideoRealHdr(player: ExoPlayer): Boolean {
 fun ManageFullscreenWindowEffects(
     activity: Activity?,
     isFullscreen: Boolean,
-    isRealHdrStream: Boolean
+    isRealHdrStream: Boolean,
+    lockInlinePortrait: Boolean = true
 ) {
+    // Enforce portrait orientation while inline card player is active and lockInlinePortrait is enabled
+    LaunchedEffect(activity, isFullscreen, lockInlinePortrait) {
+        if (!isFullscreen && activity != null) {
+            activity.requestedOrientation = if (lockInlinePortrait) {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+    }
+
     // Fullscreen system bars and brightness save/restore
-    DisposableEffect(activity, isFullscreen) {
+    DisposableEffect(activity, isFullscreen, lockInlinePortrait) {
         val originalBrightness = activity?.window?.attributes?.screenBrightness ?: -1f
         val originalColorMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             activity?.window?.colorMode ?: ActivityInfo.COLOR_MODE_DEFAULT
@@ -155,7 +167,11 @@ fun ManageFullscreenWindowEffects(
         onDispose {
             activity?.let { act ->
                 if (isFullscreen) {
-                    act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    act.requestedOrientation = if (lockInlinePortrait) {
+                        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    } else {
+                        ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }
                     val windowInsetsController = WindowCompat.getInsetsController(act.window, act.window.decorView)
                     windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
                 }

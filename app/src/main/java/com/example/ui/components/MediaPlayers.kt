@@ -88,6 +88,7 @@ fun CoreMediaPlayer(
     startInVrMode: Boolean = false,
     exoPlayer: ExoPlayer? = null,
     enableGestures: Boolean = true,
+    lockInlinePortrait: Boolean = true,
     onClose: () -> Unit,
     onTerminateAll: (() -> Unit)? = null,
     onFullscreen: ((currentPositionMs: Long) -> Unit)? = null,
@@ -325,11 +326,19 @@ fun CoreMediaPlayer(
         } else if (isVrMode) {
             sphericalViewRef?.onPause()
             sphericalViewRef?.clearPlayerSurface(activeExoPlayer)
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.requestedOrientation = if (lockInlinePortrait) {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
             onClose()
         } else if (!isInPipMode) {
             if (isFullscreen) {
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                activity?.requestedOrientation = if (lockInlinePortrait) {
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }
             }
             onClose()
         }
@@ -349,11 +358,12 @@ fun CoreMediaPlayer(
 
     var isRealHdrStream by remember { mutableStateOf(false) }
 
-    // Platform effects (System bars, brightness, wide color gamut)
+    // Platform effects (System bars, brightness, wide color gamut, portrait lock in inline card mode)
     ManageFullscreenWindowEffects(
         activity = activity,
         isFullscreen = isFullscreen,
-        isRealHdrStream = isRealHdrStream
+        isRealHdrStream = isRealHdrStream,
+        lockInlinePortrait = lockInlinePortrait
     )
 
     // Lifecycle binding (Preserving PiP playback)
@@ -1023,6 +1033,7 @@ fun GoPlayer(
     startInLandscape: Boolean = false,
     startInVrMode: Boolean = false,
     exoPlayer: ExoPlayer? = null,
+    lockInlinePortrait: Boolean = true,
     onClose: () -> Unit,
     onTerminateAll: (() -> Unit)? = null
 ) {
@@ -1036,6 +1047,7 @@ fun GoPlayer(
         startInLandscape = startInLandscape,
         startInVrMode = startInVrMode,
         exoPlayer = exoPlayer,
+        lockInlinePortrait = lockInlinePortrait,
         onClose = onClose,
         onTerminateAll = onTerminateAll
     )
@@ -1053,6 +1065,7 @@ fun InlineCardPlayer(
     initialPositionMs: Long = 0L,
     exoPlayer: ExoPlayer? = null,
     enableGestures: Boolean = true,
+    lockInlinePortrait: Boolean = true,
     onClose: () -> Unit,
     onFullscreen: (currentPositionMs: Long) -> Unit,
     onFullscreenWithMode: ((currentPositionMs: Long, startInLandscape: Boolean) -> Unit)? = null,
@@ -1068,6 +1081,7 @@ fun InlineCardPlayer(
         initialPositionMs = initialPositionMs,
         exoPlayer = exoPlayer,
         enableGestures = enableGestures,
+        lockInlinePortrait = lockInlinePortrait,
         onClose = onClose,
         onFullscreen = onFullscreen,
         onFullscreenWithMode = onFullscreenWithMode,

@@ -180,6 +180,22 @@ fun AddEditLinkScreen(
     var showActorPicker by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
+    var pendingPornhubUrl by remember { mutableStateOf<String?>(null) }
+    var isCapturingPornhubMetadata by remember { mutableStateOf(false) }
+
+    fun handleUrlFieldInput(
+        oldValue: String,
+        newValue: String,
+        isExplicitPaste: Boolean,
+        updateField: (String) -> Unit
+    ) {
+        updateField(newValue)
+        val trimmed = newValue.trim()
+        val isBulkPaste = isExplicitPaste || (trimmed.length - oldValue.trim().length >= 12)
+        if (isBulkPaste && com.example.network.VideoResolvers.isPornhubUrl(trimmed)) {
+            pendingPornhubUrl = trimmed
+        }
+    }
 
     val hasUnsavedChanges by remember(
         title, coverImage, urlHD, url4K, urlVR,
@@ -244,6 +260,116 @@ fun AddEditLinkScreen(
             dismissButton = {
                 TextButton(onClick = { showDiscardDialog = false }) {
                     Text("Keep Editing", color = accent)
+                }
+            },
+            containerColor = palette.cardBg,
+            shape = VaultDialogShape
+        )
+    }
+
+    if (pendingPornhubUrl != null) {
+        val targetPornhubUrl = pendingPornhubUrl!!
+        AlertDialog(
+            onDismissRequest = {
+                if (!isCapturingPornhubMetadata) {
+                    pendingPornhubUrl = null
+                }
+            },
+            modifier = Modifier.vaultTopGlow(),
+            title = {
+                Text(
+                    text = "PornHub Link Detected",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Would you like to capture the scene metadata (Title, Date, First Performer, PornHub Studio, and Cover), or add the URL only?",
+                        color = palette.textSecondary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                    if (isCapturingPornhubMetadata) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = accent,
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = "Capturing metadata from PornHub...",
+                                color = accent,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isCapturingPornhubMetadata,
+                    onClick = {
+                        isCapturingPornhubMetadata = true
+                        viewModel.capturePornhubSceneMetadata(
+                            url = targetPornhubUrl,
+                            onSuccess = { captured ->
+                                isCapturingPornhubMetadata = false
+                                pendingPornhubUrl = null
+                                triggerVibrate(context)
+
+                                if (!captured.title.isNullOrBlank()) {
+                                    title = captured.title
+                                }
+                                if (!captured.coverUrl.isNullOrBlank()) {
+                                    coverImage = captured.coverUrl
+                                }
+                                if (captured.assignedDateMillis != null) {
+                                    assignedDate = captured.assignedDateMillis
+                                }
+                                if (!captured.firstActorId.isNullOrBlank()) {
+                                    selectedActorIds = (listOf(captured.firstActorId) + selectedActorIds).distinct()
+                                }
+                                selectedStudioIds = listOf(captured.studioId)
+
+                                Toast.makeText(
+                                    context,
+                                    "PornHub metadata captured successfully!",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            onError = { errMsg ->
+                                isCapturingPornhubMetadata = false
+                                pendingPornhubUrl = null
+                                Toast.makeText(context, errMsg, Toast.LENGTH_LONG).show()
+                            }
+                        )
+                    }
+                ) {
+                    Text(
+                        text = "Capture Metadata",
+                        color = accent,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isCapturingPornhubMetadata,
+                    onClick = {
+                        pendingPornhubUrl = null
+                    }
+                ) {
+                    Text(
+                        text = "Add URL Only",
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             },
             containerColor = palette.cardBg,
@@ -758,10 +884,16 @@ fun AddEditLinkScreen(
                 )
                 SceneInputField(
                     value = urlVR,
-                    onValueChange = { urlVR = it },
+                    onValueChange = { newVal ->
+                        handleUrlFieldInput(urlVR, newVal, isExplicitPaste = false) { urlVR = it }
+                    },
                     placeholder = "VR URL",
                     trailingIcon = {
-                        PasteTrailingIcon(onPaste = { urlVR = it })
+                        PasteTrailingIcon(
+                            onPaste = { pastedVal ->
+                                handleUrlFieldInput(urlVR, pastedVal, isExplicitPaste = true) { urlVR = it }
+                            }
+                        )
                     },
                     modifier = Modifier.weight(1f),
                     testTag = "vr_url_input"
@@ -774,20 +906,32 @@ fun AddEditLinkScreen(
             ) {
                 SceneInputField(
                     value = urlHD,
-                    onValueChange = { urlHD = it },
+                    onValueChange = { newVal ->
+                        handleUrlFieldInput(urlHD, newVal, isExplicitPaste = false) { urlHD = it }
+                    },
                     placeholder = "HD URL",
                     trailingIcon = {
-                        PasteTrailingIcon(onPaste = { urlHD = it })
+                        PasteTrailingIcon(
+                            onPaste = { pastedVal ->
+                                handleUrlFieldInput(urlHD, pastedVal, isExplicitPaste = true) { urlHD = it }
+                            }
+                        )
                     },
                     modifier = Modifier.weight(1f),
                     testTag = "hd_url_input"
                 )
                 SceneInputField(
                     value = url4K,
-                    onValueChange = { url4K = it },
+                    onValueChange = { newVal ->
+                        handleUrlFieldInput(url4K, newVal, isExplicitPaste = false) { url4K = it }
+                    },
                     placeholder = "4K URL",
                     trailingIcon = {
-                        PasteTrailingIcon(onPaste = { url4K = it })
+                        PasteTrailingIcon(
+                            onPaste = { pastedVal ->
+                                handleUrlFieldInput(url4K, pastedVal, isExplicitPaste = true) { url4K = it }
+                            }
+                        )
                     },
                     modifier = Modifier.weight(1f),
                     testTag = "4k_url_input"

@@ -186,6 +186,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val existingActors = repository.allActors.first()
             if (existingActors.isEmpty()) {
                 repository.insertActors(com.example.data.util.SampleTestDataset.sampleActors)
+            } else {
+                // Auto-repair any previously saved concatenated or all-caps SexMex actor names (e.g. HILARYRHODES -> Hilary Rhodes)
+                val repairedActors = existingActors.mapNotNull { actor ->
+                    val raw = actor.name.trim()
+                    if (!raw.contains(" ") || raw == raw.uppercase()) {
+                        val normalized = com.example.network.SexMexScraper.normalizePerformerName(raw)
+                        if (normalized.isNotBlank() && normalized != raw) {
+                            actor.copy(name = normalized)
+                        } else null
+                    } else null
+                }
+                if (repairedActors.isNotEmpty()) {
+                    repository.insertActors(repairedActors)
+                }
             }
             val existingStudios = repository.allStudios.first()
             if (existingStudios.isEmpty()) {
@@ -508,13 +522,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val episodeHint = scene?.title?.takeIf { it.isNotBlank() }
                     ?: title.takeIf { it.isNotBlank() && it != "Media Stream" }
 
-                val resolved = withTimeout(45_000L) {
+                val resolved = withTimeout(95_000L) {
                     VideoResolvers.resolve(
                         rawUrl = trimmed,
                         torboxApiKey = settingsEntity.torboxApiKey,
                         realDebridApiKey = settingsEntity.realDebridApiKey,
                         debridOrder = orderEnum,
-                        episodeHint = episodeHint
+                        episodeHint = episodeHint,
+                        onProgressUpdate = { liveStatus ->
+                            _resolvingVideoStatus.value = liveStatus
+                        }
                     )
                 }
 
@@ -1660,15 +1677,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val actorIds = mutableListOf<String>()
 
                     for (perf in sortedPerformers) {
-                        val pName = perf.name.trim()
-                        if (pName.isBlank()) continue
+                        val rawPName = perf.name.trim()
+                        if (rawPName.isBlank()) continue
+                        val pName = if (!rawPName.contains(" ") || rawPName == rawPName.uppercase()) {
+                            com.example.network.SexMexScraper.normalizePerformerName(rawPName).ifBlank { rawPName }
+                        } else {
+                            rawPName
+                        }
                         val validPerformerStashId = perf.id.takeIf {
                             !it.startsWith("sexmex:", ignoreCase = true) && !it.startsWith("http", ignoreCase = true)
                         }
 
+                        val collapsedTarget = pName.lowercase().replace(Regex("[^a-z0-9]"), "")
                         val existing = allExistingActors.find {
                             (validPerformerStashId != null && it.stashDbId == validPerformerStashId) ||
-                            it.name.trim().equals(pName, ignoreCase = true)
+                            it.name.trim().equals(pName, ignoreCase = true) ||
+                            (collapsedTarget.length >= 4 && it.name.lowercase().replace(Regex("[^a-z0-9]"), "") == collapsedTarget)
                         }
 
                         if (existing != null) {
@@ -1679,7 +1703,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val actor = ActorEntity(
                                 id = newActorId,
                                 stashDbId = validPerformerStashId,
-                                name = perf.name,
+                                name = pName,
                                 imageUrl = perf.imageUrl ?: "",
                                 originalImageUrl = perf.imageUrl
                             )
@@ -2310,6 +2334,91 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } finally {
                 _isFetchingMagnet.value = false
+            }
+        }
+    }
+
+    data class CapturedPornhubFormMetadata(
+        val title: String?,
+        val coverUrl: String?,
+        val assignedDateMillis: Long?,
+        val firstActorId: String?,
+        val firstActorName: String?,
+        val studioId: String,
+        val studioName: String = "PornHub"
+    )
+
+    fun capturePornhubSceneMetadata(
+        url: String,
+        onSuccess: (CapturedPornhubFormMetadata) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val meta = VideoResolvers.extractPornhubMetadata(url)
+                if (meta == null || (meta.title.isNullOrBlank() && meta.coverUrl.isNullOrBlank())) {
+                    withContext(Dispatchers.Main) {
+                        onError("Could not extract metadata from this PornHub link.")
+                    }
+                    return@launch
+                }
+
+                // 1. Ensure Studio "PornHub" exists in database
+                val currentStudios = repository.allStudios.first()
+                val existingPhStudio = currentStudios.firstOrNull {
+                    it.name.trim().equals("PornHub", ignoreCase = true)
+                }
+                val resolvedStudioId = if (existingPhStudio != null) {
+                    existingPhStudio.id
+                } else {
+                    val newStudio = StudioEntity(
+                        id = UUID.randomUUID().toString(),
+                        name = "PornHub"
+                    )
+                    repository.insertStudio(newStudio)
+                    newStudio.id
+                }
+
+                // 2. Resolve or create the First Performer in database if available
+                var resolvedActorId: String? = null
+                val cleanPerformerName = meta.firstPerformerName?.trim()?.takeIf { it.isNotBlank() }
+                if (cleanPerformerName != null) {
+                    val currentActors = repository.allActors.first()
+                    val existingActor = currentActors.firstOrNull {
+                        it.name.trim().equals(cleanPerformerName, ignoreCase = true)
+                    }
+                    resolvedActorId = if (existingActor != null) {
+                        existingActor.id
+                    } else {
+                        val avatar = meta.firstPerformerAvatarUrl?.trim().orEmpty()
+                        val newActor = ActorEntity(
+                            id = UUID.randomUUID().toString(),
+                            name = cleanPerformerName,
+                            imageUrl = avatar,
+                            originalImageUrl = avatar.ifBlank { null }
+                        )
+                        repository.insertActor(newActor)
+                        newActor.id
+                    }
+                }
+
+                val result = CapturedPornhubFormMetadata(
+                    title = meta.title,
+                    coverUrl = meta.coverUrl,
+                    assignedDateMillis = meta.uploadDateMillis,
+                    firstActorId = resolvedActorId,
+                    firstActorName = cleanPerformerName,
+                    studioId = resolvedStudioId,
+                    studioName = "PornHub"
+                )
+                withContext(Dispatchers.Main) {
+                    onSuccess(result)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                withContext(Dispatchers.Main) {
+                    onError("Failed to capture PornHub metadata: ${e.message ?: "Network error"}")
+                }
             }
         }
     }

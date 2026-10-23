@@ -2,11 +2,8 @@ package com.example.network.debrid
 
 import android.util.Log
 import com.example.network.torrent.MagnetParser
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.supervisorScope
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.coroutineScope
 
 enum class DebridOrder {
     AUTO,
@@ -68,7 +65,11 @@ class DebridManager(
         return torboxProvider.isConfigured() || realDebridProvider.isConfigured()
     }
 
-    suspend fun resolve(queryOrMagnet: String, episodeHint: String? = null): DebridResult = coroutineScope {
+    suspend fun resolve(
+        queryOrMagnet: String,
+        episodeHint: String? = null,
+        onProgressUpdate: ((String) -> Unit)? = null
+    ): DebridResult = coroutineScope {
         val torboxConfigured = torboxProvider.isConfigured()
         val rdConfigured = realDebridProvider.isConfigured()
         val order = debridOrderProvider()
@@ -92,7 +93,14 @@ class DebridManager(
             return@coroutineScope cached.result
         }
 
-        val result = executeResolution(queryOrMagnet, episodeHint, torboxConfigured, rdConfigured, order)
+        val result = executeResolution(
+            queryOrMagnet = queryOrMagnet,
+            episodeHint = episodeHint,
+            torboxConfigured = torboxConfigured,
+            rdConfigured = rdConfigured,
+            order = order,
+            onProgressUpdate = onProgressUpdate
+        )
 
         if (result is DebridResult.Success) {
             resolvedStreamCache[cacheKey] = CachedStream(result)
@@ -106,7 +114,8 @@ class DebridManager(
         episodeHint: String?,
         torboxConfigured: Boolean,
         rdConfigured: Boolean,
-        order: DebridOrder
+        order: DebridOrder,
+        onProgressUpdate: ((String) -> Unit)?
     ): DebridResult = coroutineScope {
         val isTorrentOrMagnet = MagnetParser.parseHash(queryOrMagnet) != null
 
@@ -114,7 +123,12 @@ class DebridManager(
         // are only supported by Real-Debrid unrestrict API
         if (!isTorrentOrMagnet) {
             if (rdConfigured) {
-                return@coroutineScope realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
+                return@coroutineScope realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
             } else {
                 return@coroutineScope DebridResult.Error(
                     type = DebridErrorType.Unsupported,
@@ -124,58 +138,177 @@ class DebridManager(
             }
         }
 
+        // Single provider configured: directly enable both instant cache resolution AND cloud downloading
         if (torboxConfigured && !rdConfigured) {
-            return@coroutineScope torboxProvider.resolveStream(queryOrMagnet, episodeHint)
+            return@coroutineScope torboxProvider.resolveStream(
+                magnetOrMagnetOrQuery = queryOrMagnet,
+                episodeHint = episodeHint,
+                allowUncachedDownload = true,
+                onProgressUpdate = onProgressUpdate
+            )
         }
         if (!torboxConfigured && rdConfigured) {
-            return@coroutineScope realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
+            return@coroutineScope realDebridProvider.resolveStream(
+                magnetOrQuery = queryOrMagnet,
+                episodeHint = episodeHint,
+                allowUncachedDownload = true,
+                onProgressUpdate = onProgressUpdate
+            )
         }
 
+        // Both providers configured:
+        // Phase 1: Fast Cache Probe across both providers (allowUncachedDownload = false) so if EITHER
+        // provider already has the torrent 100% cached, it plays immediately in ~1s!
+        // Phase 2: If NEITHER provider has it cached, start an Active Cloud Download (allowUncachedDownload = true)
+        // on the preferred primary provider (with fallback to secondary if account/slot limits occur).
         when (order) {
             DebridOrder.REAL_DEBRID_FIRST -> {
-                val rdRes = realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
-                if (rdRes is DebridResult.Success) return@coroutineScope rdRes
-                return@coroutineScope torboxProvider.resolveStream(queryOrMagnet, episodeHint)
+                val rdProbe = realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = false,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (rdProbe is DebridResult.Success) return@coroutineScope rdProbe
+
+                val torProbe = torboxProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = false,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (torProbe is DebridResult.Success) return@coroutineScope torProbe
+
+                // Neither cached -> Start Active Cloud Download on Real-Debrid first, fallback to Torbox
+                val rdCloud = realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (rdCloud is DebridResult.Success || (rdCloud is DebridResult.Error && rdCloud.message.contains("Cloud download started", ignoreCase = true))) {
+                    return@coroutineScope rdCloud
+                }
+                return@coroutineScope torboxProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
             }
+
             DebridOrder.TORBOX_FIRST -> {
-                val torRes = torboxProvider.resolveStream(queryOrMagnet, episodeHint)
-                if (torRes is DebridResult.Success) return@coroutineScope torRes
-                return@coroutineScope realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
+                val torProbe = torboxProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = false,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (torProbe is DebridResult.Success) return@coroutineScope torProbe
+
+                val rdProbe = realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = false,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (rdProbe is DebridResult.Success) return@coroutineScope rdProbe
+
+                // Neither cached -> Start Active Cloud Download on Torbox first, fallback to Real-Debrid
+                val torCloud = torboxProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
+                if (torCloud is DebridResult.Success || (torCloud is DebridResult.Error && torCloud.message.contains("Cloud download", ignoreCase = true) || (torCloud is DebridResult.Error && torCloud.message.contains("download queue", ignoreCase = true)))) {
+                    return@coroutineScope torCloud
+                }
+                return@coroutineScope realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
             }
+
             DebridOrder.AUTO -> {
                 // Fast-path cache check: Real-Debrid checks in-memory verified state (0ms) while TorBox checks /checkcached
                 val rdCache = realDebridProvider.checkCache(queryOrMagnet)
                 if (rdCache == CacheState.CACHED) {
-                    val rdRes = realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
+                    val rdRes = realDebridProvider.resolveStream(
+                        magnetOrQuery = queryOrMagnet,
+                        episodeHint = episodeHint,
+                        allowUncachedDownload = false,
+                        onProgressUpdate = onProgressUpdate
+                    )
                     if (rdRes is DebridResult.Success) return@coroutineScope rdRes
                 }
 
                 val torboxCache = torboxProvider.checkCache(queryOrMagnet)
                 if (torboxCache == CacheState.CACHED) {
-                    val torRes = torboxProvider.resolveStream(queryOrMagnet, episodeHint)
+                    val torRes = torboxProvider.resolveStream(
+                        magnetOrQuery = queryOrMagnet,
+                        episodeHint = episodeHint,
+                        allowUncachedDownload = false,
+                        onProgressUpdate = onProgressUpdate
+                    )
                     if (torRes is DebridResult.Success) return@coroutineScope torRes
                 }
 
-                // Attempt Real-Debrid first if not known to be uncached (fast-fails in ~1.5s if uncached)
-                var lastError: DebridResult.Error? = null
+                // Probe Real-Debrid cache if not known to be uncached
                 if (rdCache != CacheState.NOT_CACHED) {
-                    val rdRes = realDebridProvider.resolveStream(queryOrMagnet, episodeHint)
-                    if (rdRes is DebridResult.Success) return@coroutineScope rdRes
-                    if (rdRes is DebridResult.Error) lastError = rdRes
+                    val rdProbe = realDebridProvider.resolveStream(
+                        magnetOrQuery = queryOrMagnet,
+                        episodeHint = episodeHint,
+                        allowUncachedDownload = false,
+                        onProgressUpdate = onProgressUpdate
+                    )
+                    if (rdProbe is DebridResult.Success) return@coroutineScope rdProbe
                 }
 
+                // Probe TorBox cache if not known to be uncached
                 if (torboxCache != CacheState.NOT_CACHED) {
-                    val torRes = torboxProvider.resolveStream(queryOrMagnet, episodeHint)
-                    if (torRes is DebridResult.Success) return@coroutineScope torRes
-                    if (torRes is DebridResult.Error && lastError == null) lastError = torRes
+                    val torProbe = torboxProvider.resolveStream(
+                        magnetOrQuery = queryOrMagnet,
+                        episodeHint = episodeHint,
+                        allowUncachedDownload = false,
+                        onProgressUpdate = onProgressUpdate
+                    )
+                    if (torProbe is DebridResult.Success) return@coroutineScope torProbe
                 }
 
-                return@coroutineScope lastError ?: DebridResult.Error(
-                    type = DebridErrorType.NotCached,
-                    message = "Torrent is not cached on Real-Debrid or Torbox.",
-                    providerName = "Debrid"
+                // Neither provider has it cached -> Start Active Cloud Download on Real-Debrid (or TorBox if RD fails)
+                val rdCloud = realDebridProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
                 )
+                if (rdCloud is DebridResult.Success || (rdCloud is DebridResult.Error && rdCloud.message.contains("Cloud download started", ignoreCase = true))) {
+                    return@coroutineScope rdCloud
+                }
+
+                val torCloud = torboxProvider.resolveStream(
+                    magnetOrQuery = queryOrMagnet,
+                    episodeHint = episodeHint,
+                    allowUncachedDownload = true,
+                    onProgressUpdate = onProgressUpdate
+                )
+                return@coroutineScope torCloud
             }
         }
     }
+
+    private suspend fun TorboxProvider.resolveStream(
+        magnetOrMagnetOrQuery: String,
+        episodeHint: String?,
+        allowUncachedDownload: Boolean,
+        onProgressUpdate: ((String) -> Unit)?
+    ): DebridResult = this.resolveStream(
+        magnetOrQuery = magnetOrMagnetOrQuery,
+        episodeHint = episodeHint,
+        allowUncachedDownload = allowUncachedDownload,
+        onProgressUpdate = onProgressUpdate
+    )
 }

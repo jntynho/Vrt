@@ -224,6 +224,10 @@ fun SettingsScreen(
                             onEnableVideoPlayerGesturesChange = {
                                 viewModel.updateSettings(currentSettings.copy(enableVideoPlayerGestures = it))
                             },
+                            lockInlinePlayerPortrait = currentSettings.lockInlinePlayerPortrait,
+                            onLockInlinePlayerPortraitChange = {
+                                viewModel.updateSettings(currentSettings.copy(lockInlinePlayerPortrait = it))
+                            },
                             navBarTransparency = currentSettings.navBarTransparency,
                             onNavBarTransparencyChange = {
                                 viewModel.updateSettings(currentSettings.copy(navBarTransparency = it))

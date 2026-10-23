@@ -42,5 +42,10 @@ interface DebridProvider {
     val name: String
     fun isConfigured(): Boolean
     suspend fun checkCache(hash: String): CacheState
-    suspend fun resolveStream(magnetOrQuery: String, episodeHint: String? = null): DebridResult
+    suspend fun resolveStream(
+        magnetOrQuery: String,
+        episodeHint: String? = null,
+        allowUncachedDownload: Boolean = true,
+        onProgressUpdate: ((String) -> Unit)? = null
+    ): DebridResult
 }

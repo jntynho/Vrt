@@ -34,6 +34,15 @@ data class ResolvedVideo(
     val headers: Map<String, String> = emptyMap()
 )
 
+data class PornhubSceneMetadata(
+    val title: String?,
+    val coverUrl: String?,
+    val uploadDateMillis: Long?,
+    val firstPerformerName: String?,
+    val firstPerformerAvatarUrl: String?,
+    val studioName: String = "PornHub"
+)
+
 object VideoResolvers {
     private const val TAG = "VideoResolvers"
 
@@ -46,6 +55,231 @@ object VideoResolvers {
         return trimmed.contains("pornhub.com") ||
                 trimmed.contains("pornhubpremium.com") ||
                 trimmed.matches(Regex(".*[?&]viewkey=[a-zA-Z0-9]+.*"))
+    }
+
+    /**
+     * Extracts rich scene metadata from a PornHub video URL:
+     * - Title
+     * - Upload / Release Date (in epoch millis)
+     * - First Performer (Name + optional Avatar URL)
+     * - Studio ("PornHub")
+     * - Cover Image URL
+     */
+    suspend fun extractPornhubMetadata(rawUrl: String): PornhubSceneMetadata? = withContext(Dispatchers.IO) {
+        val url = rawUrl.trim()
+        if (!isPornhubUrl(url)) return@withContext null
+
+        try {
+            val pageReq = Request.Builder()
+                .url(url)
+                .header("User-Agent", DEFAULT_BROWSER_UA)
+                .header("Referer", "https://www.pornhub.com/")
+                .header("Cookie", "accessAgeDisclaimerPH=1; accessPH=1")
+                .build()
+
+            val pageRes = NetworkClient.apiClient.newCall(pageReq).await()
+            val html = pageRes.body?.string().orEmpty()
+            pageRes.close()
+
+            if (html.isBlank()) return@withContext null
+
+            val doc = org.jsoup.Jsoup.parse(html, url)
+
+            var extractedTitle: String? = null
+            var extractedCover: String? = null
+            var extractedDateStr: String? = null
+            var extractedPerformerName: String? = null
+            var extractedPerformerAvatar: String? = null
+
+            // 1. Parse JSON-LD (application/ld+json) if available
+            val ldJsonElements = doc.select("script[type=application/ld+json]")
+            for (scriptEl in ldJsonElements) {
+                val rawJson = scriptEl.data().trim()
+                if (rawJson.isEmpty()) continue
+                try {
+                    val jsonObj = if (rawJson.startsWith("[")) {
+                        val arr = JSONArray(rawJson)
+                        (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                            .firstOrNull { it.optString("@type").contains("VideoObject", ignoreCase = true) }
+                            ?: arr.optJSONObject(0)
+                    } else {
+                        JSONObject(rawJson)
+                    }
+                    if (jsonObj != null) {
+                        if (extractedTitle.isNullOrBlank()) {
+                            extractedTitle = jsonObj.optString("name").takeIf { it.isNotBlank() }
+                        }
+                        if (extractedCover.isNullOrBlank()) {
+                            val thumbAny = jsonObj.opt("thumbnailUrl")
+                            extractedCover = when (thumbAny) {
+                                is String -> thumbAny.takeIf { it.isNotBlank() }
+                                is JSONArray -> (0 until thumbAny.length())
+                                    .mapNotNull { thumbAny.optString(it).takeIf { s -> s.isNotBlank() } }
+                                    .firstOrNull()
+                                else -> null
+                            }
+                        }
+                        if (extractedDateStr.isNullOrBlank()) {
+                            extractedDateStr = jsonObj.optString("uploadDate").takeIf { it.isNotBlank() }
+                                ?: jsonObj.optString("datePublished").takeIf { it.isNotBlank() }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to parse Pornhub JSON-LD: ${e.message}")
+                }
+            }
+
+            // 2. Parse flashvars_<id> JSON
+            val flashvarsMatcher = Pattern.compile("var\\s+flashvars_\\d+\\s*=\\s*(\\{.*?\\});", Pattern.DOTALL).matcher(html)
+            if (flashvarsMatcher.find()) {
+                val jsonStr = flashvarsMatcher.group(1)
+                if (!jsonStr.isNullOrBlank()) {
+                    try {
+                        val flashvarsJson = JSONObject(jsonStr)
+                        if (extractedTitle.isNullOrBlank()) {
+                            val vTitle = flashvarsJson.optString("video_title")
+                            if (vTitle.isNotBlank()) {
+                                extractedTitle = vTitle.replace("+", " ").trim()
+                            }
+                        }
+                        if (extractedCover.isNullOrBlank()) {
+                            extractedCover = flashvarsJson.optString("image_url")
+                                .replace("\\/", "/")
+                                .takeIf { it.isNotBlank() }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse Pornhub flashvars in metadata extractor: ${e.message}")
+                    }
+                }
+            }
+
+            // 3. DOM & Meta Tag Fallbacks for Title & Cover & Date
+            if (extractedTitle.isNullOrBlank()) {
+                extractedTitle = doc.selectFirst("h1.title span.inlineFree, h1.title")?.text()?.trim()
+                    ?: doc.selectFirst("meta[property=og:title], meta[name=twitter:title]")?.attr("content")?.trim()
+                    ?: doc.title()
+            }
+            extractedTitle = extractedTitle
+                ?.let { org.jsoup.parser.Parser.unescapeEntities(it, false) }
+                ?.replace(Regex("(?i)\\s*-\\s*Pornhub(\\.com|Premium\\.com)?\\s*$"), "")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+
+            if (extractedCover.isNullOrBlank()) {
+                extractedCover = doc.selectFirst("meta[property=og:image], meta[name=twitter:image]")
+                    ?.attr("content")
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            }
+
+            if (extractedDateStr.isNullOrBlank()) {
+                extractedDateStr = doc.selectFirst("meta[property=video:release_date]")?.attr("content")?.trim()
+                    ?.ifBlank { null }
+                    ?: Regex("""Added on\s*:?\s*([A-Za-z]+\s+\d{1,2},\s*\d{4}|\d{4}-\d{2}-\d{2})""", RegexOption.IGNORE_CASE)
+                        .find(doc.text())?.groupValues?.getOrNull(1)
+            }
+
+            val parsedDateMillis = parsePornhubDateToMillis(extractedDateStr)
+
+            // 4. Extract First Performer (Pornstar / Model)
+            val performerSelectors = listOf(
+                ".pornstarsWrapper a.pstar-list-btn",
+                "div.pornstarsWrapper a[href*='/pornstar/']",
+                "div.pornstarsWrapper a[href*='/model/']",
+                "a.pstar-list-btn[href*='/pornstar/']",
+                "a.pstar-list-btn[href*='/model/']",
+                ".video-detailed-info a[href*='/pornstar/']",
+                ".video-detailed-info a[href*='/model/']"
+            )
+
+            val blockedPerformerWords = setOf(
+                "pornstars", "models", "suggest", "add a pornstar", "verified", "channels", "categories"
+            )
+
+            for (selector in performerSelectors) {
+                val elements = doc.select(selector)
+                for (el in elements) {
+                    val candidateRaw = el.attr("data-mxptext").trim()
+                        .ifEmpty { el.ownText().trim() }
+                        .ifEmpty { el.text().trim() }
+                        .replace(Regex("""\s+\d+(\.\d+)?[KMB]?\s*$""", RegexOption.IGNORE_CASE), "")
+                        .trim()
+
+                    if (candidateRaw.length >= 2 && candidateRaw.lowercase() !in blockedPerformerWords) {
+                        extractedPerformerName = candidateRaw
+                        val imgEl = el.selectFirst("img")
+                        val avatarCandidate = imgEl?.attr("data-src")?.takeIf { it.isNotBlank() }
+                            ?: imgEl?.attr("src")?.takeIf { it.isNotBlank() }
+                        if (!avatarCandidate.isNullOrBlank() && !avatarCandidate.startsWith("data:")) {
+                            extractedPerformerAvatar = avatarCandidate
+                        }
+                        break
+                    }
+                }
+                if (!extractedPerformerName.isNullOrBlank()) break
+            }
+
+            // Fallback to uploader/channel model if no tagged pornstar was in .pornstarsWrapper
+            if (extractedPerformerName.isNullOrBlank()) {
+                val uploaderEl = doc.selectFirst(".userInfo .usernameBadgesWrapper a, .userInfo .usernameWrap a")
+                val uploaderName = uploaderEl?.text()?.trim()
+                if (!uploaderName.isNullOrBlank() &&
+                    uploaderName.length >= 2 &&
+                    uploaderName.lowercase() !in blockedPerformerWords
+                ) {
+                    extractedPerformerName = uploaderName
+                    val uploaderImg = doc.selectFirst(".userInfo .userAvatar img")
+                    extractedPerformerAvatar = uploaderImg?.attr("data-src")?.takeIf { it.isNotBlank() }
+                        ?: uploaderImg?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                }
+            }
+
+            PornhubSceneMetadata(
+                title = extractedTitle,
+                coverUrl = extractedCover,
+                uploadDateMillis = parsedDateMillis,
+                firstPerformerName = extractedPerformerName,
+                firstPerformerAvatarUrl = extractedPerformerAvatar,
+                studioName = "PornHub"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract Pornhub metadata: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun parsePornhubDateToMillis(rawDate: String?): Long? {
+        if (rawDate.isNullOrBlank()) return null
+        val trimmed = rawDate.trim()
+
+        // Try YYYY-MM-DD prefix first (covers ISO-8601 like "2024-05-14T10:20:30+00:00" and "2024-05-14")
+        val isoMatch = Regex("""^(\d{4})-(\d{2})-(\d{2})""").find(trimmed)
+        if (isoMatch != null) {
+            val datePrefix = isoMatch.value
+            val millis = StashDbApiService.parseDateToMillis(datePrefix)
+            if (millis != null) return millis
+        }
+
+        // Try human-readable formats like "May 14, 2024" or "14 May 2024"
+        val formats = listOf("MMM dd, yyyy", "MMMM dd, yyyy", "dd MMM yyyy", "yyyy/MM/dd")
+        for (pattern in formats) {
+            try {
+                val sdf = java.text.SimpleDateFormat(pattern, java.util.Locale.US)
+                val parsed = sdf.parse(trimmed)
+                if (parsed != null) {
+                    val cal = java.util.Calendar.getInstance().apply {
+                        time = parsed
+                        set(java.util.Calendar.HOUR_OF_DAY, 12)
+                        set(java.util.Calendar.MINUTE, 0)
+                        set(java.util.Calendar.SECOND, 0)
+                        set(java.util.Calendar.MILLISECOND, 0)
+                    }
+                    return cal.timeInMillis
+                }
+            } catch (_: Exception) {}
+        }
+
+        return StashDbApiService.parseDateToMillis(trimmed)
     }
 
     // 1. Pornhub Resolver capturing available qualities (1080p, 720p, 480p, 360p, 240p)
@@ -221,7 +455,8 @@ object VideoResolvers {
         torboxApiKey: String,
         realDebridApiKey: String,
         debridOrder: DebridOrder = DebridOrder.AUTO,
-        episodeHint: String? = null
+        episodeHint: String? = null,
+        onProgressUpdate: ((String) -> Unit)? = null
     ): ResolvedVideo {
         val debridManager = DebridManager(
             torboxKeyProvider = { torboxApiKey },
@@ -229,7 +464,11 @@ object VideoResolvers {
             debridOrderProvider = { debridOrder }
         )
 
-        val result = debridManager.resolve(queryOrMagnet, episodeHint)
+        val result = debridManager.resolve(
+            queryOrMagnet = queryOrMagnet,
+            episodeHint = episodeHint,
+            onProgressUpdate = onProgressUpdate
+        )
         when (result) {
             is DebridResult.Success -> {
                 val filename = result.filename ?: "Debrid Stream"
@@ -289,13 +528,21 @@ object VideoResolvers {
         torboxApiKey: String = "",
         realDebridApiKey: String = "",
         debridOrder: DebridOrder = DebridOrder.AUTO,
-        episodeHint: String? = null
+        episodeHint: String? = null,
+        onProgressUpdate: ((String) -> Unit)? = null
     ): ResolvedVideo {
         val trimmed = rawUrl.trim()
 
         return when {
             MagnetParser.parseHash(trimmed) != null || isHosterUrl(trimmed) -> {
-                resolveDebrid(trimmed, torboxApiKey, realDebridApiKey, debridOrder, episodeHint)
+                resolveDebrid(
+                    queryOrMagnet = trimmed,
+                    torboxApiKey = torboxApiKey,
+                    realDebridApiKey = realDebridApiKey,
+                    debridOrder = debridOrder,
+                    episodeHint = episodeHint,
+                    onProgressUpdate = onProgressUpdate
+                )
             }
             GofileScraper.isGofileUrl(trimmed) -> {
                 val streams = GofileScraper.extractStreams(trimmed)

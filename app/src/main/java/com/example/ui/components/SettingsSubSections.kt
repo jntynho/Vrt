@@ -147,6 +147,8 @@ fun SettingsDisplaySection(
     onAdaptiveCoverAspectRatioChange: (Boolean) -> Unit = {},
     enableVideoPlayerGestures: Boolean,
     onEnableVideoPlayerGesturesChange: (Boolean) -> Unit,
+    lockInlinePlayerPortrait: Boolean = true,
+    onLockInlinePlayerPortraitChange: (Boolean) -> Unit = {},
     navBarTransparency: Float = 0.65f,
     onNavBarTransparencyChange: (Float) -> Unit = {},
     navBarBlurDp: Int = 24,
@@ -320,6 +322,23 @@ fun SettingsDisplaySection(
                     )
                 },
                 onClick = { onEnableVideoPlayerGesturesChange(!enableVideoPlayerGestures) }
+            )
+        }
+
+        // Lock Card Player Orientation toggle in Grouped Card
+        GroupedCard {
+            SettingsRow(
+                title = "Lock Card Player Orientation",
+                subtitle = "Prevent screen auto-rotation while playing video inline inside a link card. Landscape rotation remains active in fullscreen mode.",
+                trailing = {
+                    Switch(
+                        checked = lockInlinePlayerPortrait,
+                        onCheckedChange = onLockInlinePlayerPortraitChange,
+                        colors = museSwitchColors(),
+                        modifier = Modifier.testTag("lock_inline_player_portrait_switch")
+                    )
+                },
+                onClick = { onLockInlinePlayerPortraitChange(!lockInlinePlayerPortrait) }
             )
         }
     }

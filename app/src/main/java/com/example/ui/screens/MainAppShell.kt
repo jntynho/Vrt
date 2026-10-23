@@ -96,6 +96,17 @@ fun MainAppShell(viewModel: MainViewModel) {
     val currentActiveVideo by rememberUpdatedState(activeVideo)
     val currentActiveInlineVideo by rememberUpdatedState(activeInlineVideo)
 
+    // Synchronize screen orientation when inline card video playback is active (and not in fullscreen)
+    LaunchedEffect(activity, activeVideo, activeInlineVideo, currentSettings.lockInlinePlayerPortrait) {
+        if (activity != null && activeVideo == null) {
+            if (activeInlineVideo != null && currentSettings.lockInlinePlayerPortrait) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+    }
+
     DisposableEffect(activity) {
         if (activity != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val listener = Consumer<PictureInPictureModeChangedInfo> { info ->
@@ -457,6 +468,7 @@ fun MainAppShell(viewModel: MainViewModel) {
                                     startInLandscape = video.startInLandscape,
                                     startInVrMode = video.startInVrMode,
                                     exoPlayer = viewModel.sharedPlayerManager.getPlayer(),
+                                    lockInlinePortrait = currentSettings.lockInlinePlayerPortrait,
                                     onClose = { viewModel.closeVideo() },
                                     onTerminateAll = { viewModel.terminateAllVideoPlayback() }
                                 )
