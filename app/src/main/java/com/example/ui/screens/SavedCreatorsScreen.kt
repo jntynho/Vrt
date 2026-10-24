@@ -58,10 +58,10 @@ enum class SavedTab {
 }
 
 enum class SavedSortOption(val displayName: String) {
+    A_Z("A-z"),
+    Z_A("Z-a"),
     RECENTLY_ADDED("Recently Added"),
-    OLDEST_ADDED("Oldest Added"),
-    A_Z("A - Z"),
-    Z_A("Z - A")
+    OLDEST_ADDED("Oldest Added")
 }
 
 @Composable
@@ -85,24 +85,15 @@ fun SavedCreatorsScreen(
         SavedTab.IMAGES -> imagesGridState
         SavedTab.VIDEOS -> videosGridState
     }
-    val sortOption by viewModel.savedSortOption.collectAsStateWithLifecycle()
+    var sortOption by remember { mutableStateOf(SavedSortOption.RECENTLY_ADDED) }
     var showSortMenu by remember { mutableStateOf(false) }
 
-    // Fallback: If switching from Model with A - Z or Z - A to Image/Video, reset to Recently Added
+    // Fallback: If switching from Model with A-z or Z-a to Image/Video, reset to Recently Added
     LaunchedEffect(selectedTab) {
         if ((selectedTab == SavedTab.IMAGES || selectedTab == SavedTab.VIDEOS) &&
             (sortOption == SavedSortOption.A_Z || sortOption == SavedSortOption.Z_A)
         ) {
-            viewModel.savedSortOption.value = SavedSortOption.RECENTLY_ADDED
-        }
-    }
-
-    // Reset scroll position to top when sort option changes
-    var previousSort by remember { mutableStateOf(sortOption) }
-    LaunchedEffect(sortOption) {
-        if (previousSort != sortOption) {
-            previousSort = sortOption
-            currentGridState.scrollToItem(0)
+            sortOption = SavedSortOption.RECENTLY_ADDED
         }
     }
 
@@ -184,34 +175,34 @@ fun SavedCreatorsScreen(
                                 )
                             }
 
-                            val availableSortOptions = if (selectedTab == SavedTab.MODELS) {
-                                listOf(
-                                    SavedSortOption.A_Z,
-                                    SavedSortOption.Z_A,
-                                    SavedSortOption.RECENTLY_ADDED,
-                                    SavedSortOption.OLDEST_ADDED
-                                )
-                            } else {
-                                listOf(
-                                    SavedSortOption.RECENTLY_ADDED,
-                                    SavedSortOption.OLDEST_ADDED
-                                )
-                            }
-
                             com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false },
-                                options = availableSortOptions.map { option ->
-                                    com.example.ui.components.VaultSortOption(
-                                        value = option,
-                                        label = option.displayName,
-                                        isSelected = sortOption == option
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                val savedOptions = if (selectedTab == SavedTab.MODELS) {
+                                    listOf(
+                                        SavedSortOption.A_Z to "A-z",
+                                        SavedSortOption.Z_A to "Z-a",
+                                        SavedSortOption.RECENTLY_ADDED to "Recently Added",
+                                        SavedSortOption.OLDEST_ADDED to "Oldest Added"
                                     )
-                                },
-                                onOptionSelected = { selectedOption ->
-                                    viewModel.savedSortOption.value = selectedOption
+                                } else {
+                                    listOf(
+                                        SavedSortOption.RECENTLY_ADDED to "Recently Added",
+                                        SavedSortOption.OLDEST_ADDED to "Oldest Added"
+                                    )
                                 }
-                            )
+                                savedOptions.forEach { (option, label) ->
+                                    com.example.ui.components.VaultSortDropdownItem(
+                                        label = label,
+                                        isSelected = sortOption == option,
+                                        onClick = {
+                                            sortOption = option
+                                            showSortMenu = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 )

@@ -179,19 +179,7 @@ fun OnlyhavenScreen(
                             )
                         }
 
-                        // Search Action
-                        IconButton(
-                            onClick = { isSearchExpanded = true },
-                            modifier = Modifier.testTag("search_creators_action_button")
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_app_search),
-                                contentDescription = "Search",
-                                tint = palette.textPrimary
-                            )
-                        }
-
-                        // Sort Action with Unified Dropdown Menu
+                        // Sort Action with Dropdown Menu
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -207,18 +195,32 @@ fun OnlyhavenScreen(
                             com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
-                                options = OnlyhavenSortMode.entries.map { mode ->
-                                    com.example.ui.components.VaultSortOption(
-                                        value = mode,
+                                modifier = Modifier.widthIn(min = 210.dp)
+                            ) {
+                                OnlyhavenSortMode.entries.forEach { mode ->
+                                    val isSelected = currentSort == mode
+                                    com.example.ui.components.VaultSortDropdownItem(
                                         label = mode.displayName,
-                                        isSelected = currentSort == mode
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            if (currentSort != mode) {
+                                                viewModel.setOnlyhavenSortMode(mode)
+                                            }
+                                            showSortMenu = false
+                                        }
                                     )
-                                },
-                                onOptionSelected = { mode ->
-                                    if (currentSort != mode) {
-                                        viewModel.setOnlyhavenSortMode(mode)
-                                    }
                                 }
+                            }
+                        }
+
+                        IconButton(
+                            onClick = { isSearchExpanded = true },
+                            modifier = Modifier.testTag("search_creators_action_button")
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_app_search),
+                                contentDescription = "Search",
+                                tint = palette.textPrimary
                             )
                         }
                     }

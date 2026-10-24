@@ -286,7 +286,7 @@ fun KanimeScreen(
                             )
                         }
 
-                        // Sort Action Button with standard unified VaultSortDropdownMenu design
+                        // Sort Action Button with standard unified DropdownMenu design
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -301,18 +301,20 @@ fun KanimeScreen(
 
                             com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false },
-                                options = sortOptions.map { order ->
-                                    com.example.ui.components.VaultSortOption(
-                                        value = order,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                sortOptions.forEach { order ->
+                                    val isSelected = currentSort == order
+                                    com.example.ui.components.VaultSortDropdownItem(
                                         label = order.displayName,
-                                        isSelected = currentSort == order
+                                        isSelected = isSelected,
+                                        onClick = {
+                                            viewModel.setKanimeSortOrder(order)
+                                            showSortMenu = false
+                                        }
                                     )
-                                },
-                                onOptionSelected = { order ->
-                                    viewModel.setKanimeSortOrder(order)
                                 }
-                            )
+                            }
                         }
                     }
                 },

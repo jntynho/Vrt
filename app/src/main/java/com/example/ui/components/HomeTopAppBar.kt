@@ -98,97 +98,95 @@ fun HomeTopAppBar(
         navIconType = if (isFilteredOrDeep) NavIconType.BACK else NavIconType.DRAWER,
         onNavClick = if (isFilteredOrDeep) onNavigateBack else onOpenDrawer,
         actions = {
-            if (!isSearchExpanded) {
-                // Search Action
+            // Search Action
+            IconButton(
+                onClick = { isSearchExpanded = true },
+                modifier = Modifier.testTag("search_action_button")
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_app_search),
+                    contentDescription = "Search",
+                    tint = palette.textPrimary
+                )
+            }
+
+            // Sort Action with Dropdown Menu
+            Box {
                 IconButton(
-                    onClick = { isSearchExpanded = true },
-                    modifier = Modifier.testTag("search_action_button")
+                    onClick = { showSortMenu = true },
+                    modifier = Modifier.testTag("sort_action_button")
                 ) {
                     Icon(
-                        painter = painterResource(id = R.drawable.ic_app_search),
-                        contentDescription = "Search",
+                        painter = painterResource(id = R.drawable.ic_app_sort),
+                        contentDescription = "Sort Mode",
                         tint = palette.textPrimary
                     )
                 }
 
-                // Sort Action with Unified Dropdown Menu
-                Box {
-                    IconButton(
-                        onClick = { showSortMenu = true },
-                        modifier = Modifier.testTag("sort_action_button")
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_app_sort),
-                            contentDescription = "Sort Mode",
-                            tint = palette.textPrimary
-                        )
-                    }
-
+                VaultSortDropdownMenu(
+                    expanded = showSortMenu,
+                    onDismissRequest = { showSortMenu = false }
+                ) {
                     val sortOptions = listOf(
                         SortMode.CARD_NEWEST to "New By Date",
                         SortMode.CARD_OLDEST to "Old By Date",
                         SortMode.RECENTLY_ADDED to "Recently Added",
-                        SortMode.OLDEST_ADDED to "Oldest Added",
-                        SortMode.TITLE_AZ to "A - Z",
-                        SortMode.TITLE_ZA to "Z - A"
-                    ).map { (mode, label) ->
+                        SortMode.OLDEST_ADDED to "Oldest Added"
+                    )
+
+                    sortOptions.forEach { (mode, label) ->
                         val isSelected = currentSort == mode ||
                             (mode == SortMode.CARD_NEWEST && currentSort == SortMode.NEWEST) ||
                             (mode == SortMode.CARD_OLDEST && currentSort == SortMode.OLDEST)
-                        VaultSortOption(
-                            value = mode,
+
+                        VaultSortDropdownItem(
                             label = label,
-                            isSelected = isSelected
+                            isSelected = isSelected,
+                            onClick = {
+                                onSortChange(mode)
+                                showSortMenu = false
+                            }
                         )
                     }
+                }
+            }
 
-                    VaultSortDropdownMenu(
-                        expanded = showSortMenu,
-                        onDismissRequest = { showSortMenu = false },
-                        options = sortOptions,
-                        onOptionSelected = { mode ->
-                            onSortChange(mode)
-                        }
+            // Edit Actor / Studio Action in Header
+            if (targetActor != null) {
+                IconButton(
+                    onClick = onEditActor,
+                    modifier = Modifier.testTag("edit_actor_header_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_edit_pencil),
+                        contentDescription = "Edit Actor",
+                        tint = palette.textPrimary
                     )
                 }
-
-                // Edit Actor / Studio Action in Header
-                if (targetActor != null) {
-                    IconButton(
-                        onClick = onEditActor,
-                        modifier = Modifier.testTag("edit_actor_header_button")
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_edit_pencil),
-                            contentDescription = "Edit Actor",
-                            tint = palette.textPrimary
-                        )
-                    }
-                } else if (targetStudio != null) {
-                    IconButton(
-                        onClick = onEditStudio,
-                        modifier = Modifier.testTag("edit_studio_header_button")
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_edit_pencil),
-                            contentDescription = "Edit Studio",
-                            tint = palette.textPrimary
-                        )
-                    }
+            } else if (targetStudio != null) {
+                IconButton(
+                    onClick = onEditStudio,
+                    modifier = Modifier.testTag("edit_studio_header_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_edit_pencil),
+                        contentDescription = "Edit Studio",
+                        tint = palette.textPrimary
+                    )
                 }
+            }
 
-                // Add Scene Action - ONLY on Main Screen (Home)
-                if (currentScreen is ScreenState.Home) {
-                    IconButton(
-                        onClick = onAddScene,
-                        modifier = Modifier.testTag("add_scene_button")
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_app_add),
-                            contentDescription = "Add Scene",
-                            tint = palette.textPrimary
-                        )
-                    }
+            // Add Scene Action - ONLY on Main Screen (Home)
+            if (currentScreen is ScreenState.Home) {
+                IconButton(
+                    onClick = onAddScene,
+                    modifier = Modifier.testTag("add_scene_button")
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_app_add),
+                        contentDescription = "Add Scene",
+                        tint = palette.textPrimary
+                    )
                 }
             }
         }

@@ -67,7 +67,7 @@ fun StudioManagementScreen(
     val showCards = settings.showManagementCards
 
     var showAddDialog by remember { mutableStateOf(false) }
-    val sortOption by viewModel.studiosSortOption.collectAsStateWithLifecycle()
+    var sortOption by remember { mutableStateOf(ManagementSortOption.NAME_AZ) }
     var showSortMenu by remember { mutableStateOf(false) }
 
     // Search state
@@ -161,7 +161,7 @@ fun StudioManagementScreen(
                             )
                         }
 
-                        // Sort Menu Button & Unified Dropdown
+                        // Sort Menu Button & Dropdown
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -176,18 +176,25 @@ fun StudioManagementScreen(
 
                             com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false },
-                                options = ManagementSortOption.entries.map { option ->
-                                    com.example.ui.components.VaultSortOption(
-                                        value = option,
-                                        label = option.displayName,
-                                        isSelected = sortOption == option
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                val studioSortOptions = listOf(
+                                    ManagementSortOption.NAME_AZ to "A - Z",
+                                    ManagementSortOption.NAME_ZA to "Z - A",
+                                    ManagementSortOption.NEWEST to "New",
+                                    ManagementSortOption.OLDEST to "Old"
+                                )
+                                studioSortOptions.forEach { (option, label) ->
+                                    com.example.ui.components.VaultSortDropdownItem(
+                                        label = label,
+                                        isSelected = sortOption == option,
+                                        onClick = {
+                                            sortOption = option
+                                            showSortMenu = false
+                                        }
                                     )
-                                },
-                                onOptionSelected = { selectedOption ->
-                                    viewModel.studiosSortOption.value = selectedOption
                                 }
-                            )
+                            }
                         }
 
                         // Add Studio Button

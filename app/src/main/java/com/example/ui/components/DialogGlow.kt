@@ -1,9 +1,21 @@
 package com.example.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -12,14 +24,24 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
+import androidx.compose.ui.unit.sp
 import com.example.ui.theme.LocalVaultPalette
 
 /**
  * Modern rounded shape matching the Nuvio / Vault dialog design.
  */
 val VaultDialogShape = RoundedCornerShape(26.dp)
+
+/**
+ * Unified corner radius and shape for all Sort dropdown menus and their selection highlights.
+ */
+val VaultSortMenuCornerRadius = 16.dp
+val VaultSortMenuShape = RoundedCornerShape(VaultSortMenuCornerRadius)
 
 /**
  * Modern dark dialog background color (#1A1F25)
@@ -85,3 +107,89 @@ fun Modifier.vaultTopGlow(
         cornerRadius = cornerRadius
     )
 }
+
+/**
+ * Strips Material 3 DropdownMenu's built-in 8.dp top and bottom vertical padding
+ * so that menu items and selection cards sit flush with the window edges with zero gaps.
+ */
+fun Modifier.removeDropdownMenuVerticalPadding(): Modifier = this.layout { measurable, constraints ->
+    val vPad = 8.dp.roundToPx()
+    val placeable = measurable.measure(constraints.offset(vertical = vPad * 2))
+    val resolvedHeight = (placeable.height - vPad * 2).coerceAtLeast(0)
+    layout(placeable.width, resolvedHeight) {
+        placeable.placeRelative(0, -vPad)
+    }
+}
+
+/**
+ * Unified Sort DropdownMenu container used across the entire project:
+ * - Zero outer/vertical padding so selection cards touch the window edges cleanly.
+ * - Consistent 16.dp rounded corners with top glow border.
+ */
+@Composable
+fun VaultSortDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val palette = LocalVaultPalette.current
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismissRequest,
+        modifier = modifier
+            .widthIn(min = 190.dp)
+            .clip(VaultSortMenuShape)
+            .vaultTopGlow(cornerRadius = VaultSortMenuCornerRadius)
+            .removeDropdownMenuVerticalPadding(),
+        shape = VaultSortMenuShape,
+        containerColor = palette.cardBg,
+        content = content
+    )
+}
+
+/**
+ * Unified Sort DropdownMenuItem:
+ * - No checkmark icon (`leadingIcon = null`).
+ * - Selection card shape (`VaultSortMenuShape`, 16.dp) visually matches the menu window corners.
+ * - Zero outer margins/gaps between items and window edges.
+ */
+@Composable
+fun VaultSortDropdownItem(
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalVaultPalette.current
+    val accent = MaterialTheme.colorScheme.primary
+
+    val animatedTextColor by animateColorAsState(
+        targetValue = if (isSelected) accent else palette.textPrimary,
+        animationSpec = tween(durationMillis = 180),
+        label = "vault_sort_text_color"
+    )
+    val animatedBgColor by animateColorAsState(
+        targetValue = if (isSelected) accent.copy(alpha = 0.14f) else Color.Transparent,
+        animationSpec = tween(durationMillis = 180),
+        label = "vault_sort_bg_color"
+    )
+
+    DropdownMenuItem(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(VaultSortMenuShape)
+            .background(animatedBgColor),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+        text = {
+            Text(
+                text = label,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = animatedTextColor,
+                fontSize = 14.5.sp
+            )
+        },
+        onClick = onClick
+    )
+}
+

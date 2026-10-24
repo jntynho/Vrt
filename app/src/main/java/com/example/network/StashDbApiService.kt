@@ -46,7 +46,9 @@ data class StashScene(
     val parentStudioId: String? = null,
     val parentStudioName: String? = null,
     val coverUrl: String? = null,
-    val femalePerformers: List<StashPerformer> = emptyList()
+    val femalePerformers: List<StashPerformer> = emptyList(),
+    val directVideoUrl: String? = null,
+    val is4k: Boolean = false
 )
 
 data class StashSceneQueryResult(

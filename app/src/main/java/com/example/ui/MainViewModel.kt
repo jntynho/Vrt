@@ -37,7 +37,24 @@ enum class SortMode {
 enum class StashSearchType {
     ACTORS,
     STUDIO,
-    SEXMEX
+    SEXMEX,
+    PORNHUB,
+    PORNHUB_STUDIO,
+    XHAMSTER;
+
+    val isStudioTab: Boolean
+        get() = this == STUDIO || this == PORNHUB_STUDIO
+
+    val isPornhubTab: Boolean
+        get() = this == PORNHUB || this == PORNHUB_STUDIO
+}
+
+enum class StashSourceMode {
+    HUB,
+    STASHDB,
+    SEXMEX,
+    PORNHUB,
+    XHAMSTER
 }
 
 enum class SettingsSection {
@@ -98,7 +115,9 @@ private data class StashTabCache(
     val currentPage: Int = 1,
     val canLoadMore: Boolean = false,
     val sortMode: StashSceneSortMode = StashSceneSortMode.RELEASE_DATE,
-    val sexMexNextPageUrl: String? = null
+    val sexMexNextPageUrl: String? = null,
+    val pornhubNextPageUrl: String? = null,
+    val xhamsterNextPageUrl: String? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -418,6 +437,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val isSameFeedContext = (previous is ScreenState.AddEditLink || next is ScreenState.AddEditLink)
             if (!isSameFeedContext && searchQuery.value.isNotEmpty()) {
                 searchQuery.value = ""
+            }
+            if (previous is ScreenState.StashDb && next !is ScreenState.StashDb) {
+                _stashSourceMode.value = StashSourceMode.HUB
+                _isStashSearchExpanded.value = false
             }
         }
     }
@@ -792,6 +815,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _stashActiveType = MutableStateFlow(StashSearchType.ACTORS)
     val stashActiveType: StateFlow<StashSearchType> = _stashActiveType.asStateFlow()
 
+    private val _stashSourceMode = MutableStateFlow(StashSourceMode.HUB)
+    val stashSourceMode: StateFlow<StashSourceMode> = _stashSourceMode.asStateFlow()
+
+    private var lastStandardStashType: StashSearchType = StashSearchType.ACTORS
+    private var lastPornhubStashType: StashSearchType = StashSearchType.PORNHUB
+
     private val _stashSortMode = MutableStateFlow(StashSceneSortMode.RELEASE_DATE)
     val stashSortMode: StateFlow<StashSceneSortMode> = _stashSortMode.asStateFlow()
 
@@ -844,6 +873,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var stashScenesJob: Job? = null
     private var stashLoadMoreJob: Job? = null
     private var currentSexMexNextPageUrl: String? = null
+    private var currentPornhubNextPageUrl: String? = null
+    private var currentXhamsterNextPageUrl: String? = null
 
     // Clean Tab State Cache Map
     private val stashTabCacheMap = ConcurrentHashMap<StashSearchType, StashTabCache>()
@@ -852,17 +883,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentType = _stashActiveType.value
         stashTabCacheMap[currentType] = StashTabCache(
             query = _stashSearchQuery.value,
-            performerResults = if (currentType == StashSearchType.STUDIO) emptyList() else _stashPerformerResults.value,
-            studioResults = if (currentType == StashSearchType.STUDIO) _stashStudioResults.value else emptyList(),
+            performerResults = if (currentType.isStudioTab) emptyList() else _stashPerformerResults.value,
+            studioResults = if (currentType.isStudioTab) _stashStudioResults.value else emptyList(),
             scenes = _stashScenesList.value,
             rawScenes = _rawStashScenesList.value,
-            selectedPerformer = if (currentType == StashSearchType.STUDIO) null else _stashSelectedPerformer.value,
-            selectedStudio = if (currentType == StashSearchType.STUDIO) _stashSelectedStudio.value else null,
+            selectedPerformer = if (currentType.isStudioTab) null else _stashSelectedPerformer.value,
+            selectedStudio = if (currentType.isStudioTab) _stashSelectedStudio.value else null,
             totalCount = _stashTotalScenesCount.value,
             currentPage = _stashCurrentPage.value,
             canLoadMore = _stashCanLoadMore.value,
             sortMode = _stashSortMode.value,
-            sexMexNextPageUrl = if (currentType == StashSearchType.SEXMEX) currentSexMexNextPageUrl else null
+            sexMexNextPageUrl = if (currentType == StashSearchType.SEXMEX) currentSexMexNextPageUrl else null,
+            pornhubNextPageUrl = if (currentType.isPornhubTab) currentPornhubNextPageUrl else null,
+            xhamsterNextPageUrl = if (currentType == StashSearchType.XHAMSTER) currentXhamsterNextPageUrl else null
         )
     }
 
@@ -873,6 +906,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setStashSearchExpanded(expanded: Boolean) {
         _isStashSearchExpanded.value = expanded
+    }
+
+    private fun sortLocalStashScenes(scenes: List<StashScene>, mode: StashSceneSortMode): List<StashScene> {
+        return when (mode) {
+            StashSceneSortMode.TITLE -> scenes.sortedBy { it.title.trim().lowercase() }
+            StashSceneSortMode.RELEASE_DATE,
+            StashSceneSortMode.CREATED_AT,
+            StashSceneSortMode.UPDATED_AT -> scenes.sortedWith(
+                compareByDescending<StashScene> { it.date ?: "" }
+                    .thenBy { it.title.trim().lowercase() }
+            )
+            StashSceneSortMode.TRENDING,
+            StashSceneSortMode.POPULARITY,
+            StashSceneSortMode.DURATION -> scenes
+        }
     }
 
     fun setStashSortMode(mode: StashSceneSortMode, apiKey: String) {
@@ -895,11 +943,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     selectStashStudio(studio, effectiveApiKey, forceReload = true)
                 }
             }
+            StashSearchType.PORNHUB, StashSearchType.PORNHUB_STUDIO, StashSearchType.XHAMSTER -> {
+                val sortedRaw = sortLocalStashScenes(_rawStashScenesList.value, mode)
+                _rawStashScenesList.value = sortedRaw
+                _stashScenesList.value = applyStudioFilter(sortedRaw, settings.value)
+                syncCurrentTabToCache()
+            }
             StashSearchType.SEXMEX -> Unit
         }
     }
 
+    fun selectStashSourceMode(mode: StashSourceMode, apiKey: String = "") {
+        val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
+        when (mode) {
+            StashSourceMode.HUB -> {
+                _isStashSearchExpanded.value = false
+                _stashSelectedSceneIds.value = emptySet()
+                _stashSourceMode.value = StashSourceMode.HUB
+            }
+            StashSourceMode.STASHDB -> {
+                val targetType = if (_stashActiveType.value == StashSearchType.ACTORS || _stashActiveType.value == StashSearchType.STUDIO) {
+                    _stashActiveType.value
+                } else {
+                    lastStandardStashType
+                }
+                _stashSourceMode.value = StashSourceMode.STASHDB
+                setStashActiveType(targetType, effectiveApiKey)
+            }
+            StashSourceMode.SEXMEX -> {
+                if (_stashActiveType.value == StashSearchType.ACTORS || _stashActiveType.value == StashSearchType.STUDIO) {
+                    lastStandardStashType = _stashActiveType.value
+                } else if (_stashActiveType.value.isPornhubTab) {
+                    lastPornhubStashType = _stashActiveType.value
+                }
+                _stashSourceMode.value = StashSourceMode.SEXMEX
+                setStashActiveType(StashSearchType.SEXMEX, effectiveApiKey)
+            }
+            StashSourceMode.PORNHUB -> {
+                if (_stashActiveType.value == StashSearchType.ACTORS || _stashActiveType.value == StashSearchType.STUDIO) {
+                    lastStandardStashType = _stashActiveType.value
+                }
+                val targetType = if (_stashActiveType.value.isPornhubTab) {
+                    _stashActiveType.value
+                } else {
+                    lastPornhubStashType
+                }
+                _stashSourceMode.value = StashSourceMode.PORNHUB
+                setStashActiveType(targetType, effectiveApiKey)
+            }
+            StashSourceMode.XHAMSTER -> {
+                if (_stashActiveType.value == StashSearchType.ACTORS || _stashActiveType.value == StashSearchType.STUDIO) {
+                    lastStandardStashType = _stashActiveType.value
+                } else if (_stashActiveType.value.isPornhubTab) {
+                    lastPornhubStashType = _stashActiveType.value
+                }
+                _stashSourceMode.value = StashSourceMode.XHAMSTER
+                setStashActiveType(StashSearchType.XHAMSTER, effectiveApiKey)
+            }
+        }
+    }
+
     fun setStashActiveType(type: StashSearchType, apiKey: String) {
+        if (type == StashSearchType.ACTORS || type == StashSearchType.STUDIO) {
+            lastStandardStashType = type
+        } else if (type.isPornhubTab) {
+            lastPornhubStashType = type
+        }
         if (_stashActiveType.value == type) return
 
         // Cancel any in-flight search or scene loading jobs from previous tab so results never bleed across tabs
@@ -922,17 +1031,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val currentSettings = settings.value
         val restoredRaw = cached.rawScenes.ifEmpty { cached.scenes }
         _stashSearchQuery.value = cached.query
-        _stashPerformerResults.value = if (type == StashSearchType.STUDIO) emptyList() else cached.performerResults
-        _stashStudioResults.value = if (type == StashSearchType.STUDIO) cached.studioResults else emptyList()
+        _stashPerformerResults.value = if (type.isStudioTab) emptyList() else cached.performerResults
+        _stashStudioResults.value = if (type.isStudioTab) cached.studioResults else emptyList()
         _rawStashScenesList.value = restoredRaw
         _stashScenesList.value = applyStudioFilter(restoredRaw, currentSettings)
         _stashTotalScenesCount.value = cached.totalCount
         _stashCurrentPage.value = cached.currentPage
         _stashCanLoadMore.value = cached.canLoadMore
-        _stashSelectedPerformer.value = if (type == StashSearchType.STUDIO) null else cached.selectedPerformer
-        _stashSelectedStudio.value = if (type == StashSearchType.STUDIO) cached.selectedStudio else null
+        _stashSelectedPerformer.value = if (type.isStudioTab) null else cached.selectedPerformer
+        _stashSelectedStudio.value = if (type.isStudioTab) cached.selectedStudio else null
         _stashSortMode.value = cached.sortMode
         currentSexMexNextPageUrl = if (type == StashSearchType.SEXMEX) cached.sexMexNextPageUrl else null
+        currentPornhubNextPageUrl = if (type.isPornhubTab) cached.pornhubNextPageUrl else null
+        currentXhamsterNextPageUrl = if (type == StashSearchType.XHAMSTER) cached.xhamsterNextPageUrl else null
     }
 
     fun toggleStashSceneSelection(sceneId: String) {
@@ -950,6 +1061,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stashLoadMoreJob?.cancel()
         stashTabCacheMap.clear()
         currentSexMexNextPageUrl = null
+        currentPornhubNextPageUrl = null
+        currentXhamsterNextPageUrl = null
         _stashSearchQuery.value = ""
         _isStashSearchExpanded.value = false
         _stashPerformerResults.value = emptyList()
@@ -966,6 +1079,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isStashLoadingEntities.value = false
         _isStashLoadingScenes.value = false
         _isStashLoadingMore.value = false
+        _stashSourceMode.value = StashSourceMode.HUB
+        lastStandardStashType = StashSearchType.ACTORS
+        lastPornhubStashType = StashSearchType.PORNHUB
     }
 
     private fun scoreSearchMatch(name: String, aliases: List<String>, query: String): Int {
@@ -997,7 +1113,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
             _isStashLoadingEntities.value = true
-            _isStashLoadingScenes.value = (searchTargetType == StashSearchType.SEXMEX)
+            _isStashLoadingScenes.value = (
+                searchTargetType == StashSearchType.SEXMEX ||
+                    searchTargetType.isPornhubTab ||
+                    searchTargetType == StashSearchType.XHAMSTER
+                )
             _stashSearchError.value = null
             _stashPerformerResults.value = emptyList()
             _stashStudioResults.value = emptyList()
@@ -1011,6 +1131,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _stashCanLoadMore.value = false
             if (searchTargetType == StashSearchType.SEXMEX) {
                 currentSexMexNextPageUrl = null
+            } else if (searchTargetType.isPornhubTab) {
+                currentPornhubNextPageUrl = null
+            } else if (searchTargetType == StashSearchType.XHAMSTER) {
+                currentXhamsterNextPageUrl = null
             }
             syncCurrentTabToCache()
 
@@ -1108,11 +1232,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _isStashLoadingScenes.value = false
                     }
                 }
+                StashSearchType.PORNHUB -> {
+                    try {
+                        val result = com.example.network.PornhubStarScraper.searchPornhubStars(q)
+                        val filtered = applyStudioFilter(result.scenes, settings.value)
+                        val hasMore = result.scenes.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                        currentPornhubNextPageUrl = result.nextPageUrl
+                        _stashPerformerResults.value = result.performers
+                        _stashSelectedPerformer.value = result.performers.firstOrNull()
+                        _rawStashScenesList.value = result.scenes
+                        _stashScenesList.value = filtered
+                        _stashTotalScenesCount.value = result.scenes.size
+                        _stashCurrentPage.value = 1
+                        _stashCanLoadMore.value = hasMore
+                        stashTabCacheMap[StashSearchType.PORNHUB] = StashTabCache(
+                            query = q,
+                            performerResults = result.performers,
+                            selectedPerformer = result.performers.firstOrNull(),
+                            scenes = filtered,
+                            rawScenes = result.scenes,
+                            totalCount = result.scenes.size,
+                            currentPage = 1,
+                            canLoadMore = hasMore,
+                            pornhubNextPageUrl = result.nextPageUrl
+                        )
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        _stashSearchError.value = e.message ?: "Failed to search PornHub"
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    }
+                }
+                StashSearchType.PORNHUB_STUDIO -> {
+                    try {
+                        val result = com.example.network.PornhubStarScraper.searchPornhubChannels(q)
+                        val filtered = applyStudioFilter(result.scenes, settings.value)
+                        val hasMore = result.scenes.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                        currentPornhubNextPageUrl = result.nextPageUrl
+                        _stashStudioResults.value = result.studios
+                        _stashSelectedStudio.value = result.studios.firstOrNull()
+                        _rawStashScenesList.value = result.scenes
+                        _stashScenesList.value = filtered
+                        _stashTotalScenesCount.value = result.scenes.size
+                        _stashCurrentPage.value = 1
+                        _stashCanLoadMore.value = hasMore
+                        stashTabCacheMap[StashSearchType.PORNHUB_STUDIO] = StashTabCache(
+                            query = q,
+                            studioResults = result.studios,
+                            selectedStudio = result.studios.firstOrNull(),
+                            scenes = filtered,
+                            rawScenes = result.scenes,
+                            totalCount = result.scenes.size,
+                            currentPage = 1,
+                            canLoadMore = hasMore,
+                            pornhubNextPageUrl = result.nextPageUrl
+                        )
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        _stashSearchError.value = e.message ?: "Failed to search PornHub channels"
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    }
+                }
+                StashSearchType.XHAMSTER -> {
+                    try {
+                        val result = com.example.network.XhamsterStarScraper.searchXhamsterUnified(q)
+                        val sortedRaw = sortLocalStashScenes(result.scenes, _stashSortMode.value)
+                        val filtered = applyStudioFilter(sortedRaw, settings.value)
+                        val hasMore = sortedRaw.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                        currentXhamsterNextPageUrl = result.nextPageUrl
+                        _stashPerformerResults.value = result.results
+                        _stashSelectedPerformer.value = result.results.firstOrNull()
+                        _rawStashScenesList.value = sortedRaw
+                        _stashScenesList.value = filtered
+                        _stashTotalScenesCount.value = sortedRaw.size
+                        _stashCurrentPage.value = 1
+                        _stashCanLoadMore.value = hasMore
+                        stashTabCacheMap[StashSearchType.XHAMSTER] = StashTabCache(
+                            query = q,
+                            performerResults = result.results,
+                            selectedPerformer = result.results.firstOrNull(),
+                            scenes = filtered,
+                            rawScenes = sortedRaw,
+                            totalCount = sortedRaw.size,
+                            currentPage = 1,
+                            canLoadMore = hasMore,
+                            sortMode = _stashSortMode.value,
+                            xhamsterNextPageUrl = result.nextPageUrl
+                        )
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        _stashSearchError.value = e.message ?: "Failed to search xHamster"
+                        _isStashLoadingEntities.value = false
+                        _isStashLoadingScenes.value = false
+                    }
+                }
             }
         }
     }
 
     fun searchStashForActor(actorName: String, apiKey: String) {
+        _stashSourceMode.value = StashSourceMode.STASHDB
         setStashActiveType(StashSearchType.ACTORS, apiKey)
         setStashSearchQuery(actorName)
         performStashSearch(apiKey = apiKey, query = actorName)
@@ -1120,6 +1346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun searchStashForStudio(studioName: String, apiKey: String) {
+        _stashSourceMode.value = StashSourceMode.STASHDB
         setStashActiveType(StashSearchType.STUDIO, apiKey)
         setStashSearchQuery(studioName)
         performStashSearch(apiKey = apiKey, query = studioName)
@@ -1171,12 +1398,185 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun exploreTrendingPornhub() {
+        if (_stashActiveType.value == StashSearchType.PORNHUB_STUDIO) {
+            exploreTrendingPornhubChannels()
+            return
+        }
+        stashSearchJob?.cancel()
+        stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
+            _isStashLoadingEntities.value = true
+            _isStashLoadingScenes.value = true
+            _stashSearchError.value = null
+            _stashPerformerResults.value = emptyList()
+            _stashSelectedPerformer.value = null
+            _stashSelectedSceneIds.value = emptySet()
+            _stashCurrentPage.value = 1
+            _stashCanLoadMore.value = false
+            currentPornhubNextPageUrl = null
+            _stashSearchQuery.value = ""
+            try {
+                val result = com.example.network.PornhubStarScraper.exploreTrendingPornhubStars()
+                val filtered = applyStudioFilter(result.scenes, settings.value)
+                val hasMore = result.scenes.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                currentPornhubNextPageUrl = result.nextPageUrl
+                _stashPerformerResults.value = result.performers
+                _stashSelectedPerformer.value = result.performers.firstOrNull()
+                _rawStashScenesList.value = result.scenes
+                _stashScenesList.value = filtered
+                _stashTotalScenesCount.value = result.scenes.size
+                _stashCanLoadMore.value = hasMore
+                stashTabCacheMap[StashSearchType.PORNHUB] = StashTabCache(
+                    performerResults = result.performers,
+                    selectedPerformer = result.performers.firstOrNull(),
+                    scenes = filtered,
+                    rawScenes = result.scenes,
+                    totalCount = result.scenes.size,
+                    currentPage = 1,
+                    canLoadMore = hasMore,
+                    pornhubNextPageUrl = result.nextPageUrl
+                )
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
+                _stashSearchError.value = e.message ?: "Failed to explore PornHub stars"
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            }
+        }
+    }
+
+    fun exploreTrendingPornhubChannels() {
+        stashSearchJob?.cancel()
+        stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
+            _isStashLoadingEntities.value = true
+            _isStashLoadingScenes.value = true
+            _stashSearchError.value = null
+            _stashStudioResults.value = emptyList()
+            _stashSelectedStudio.value = null
+            _stashSelectedSceneIds.value = emptySet()
+            _stashCurrentPage.value = 1
+            _stashCanLoadMore.value = false
+            currentPornhubNextPageUrl = null
+            _stashSearchQuery.value = ""
+            try {
+                val result = com.example.network.PornhubStarScraper.exploreTrendingPornhubChannels()
+                val filtered = applyStudioFilter(result.scenes, settings.value)
+                val hasMore = result.scenes.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                currentPornhubNextPageUrl = result.nextPageUrl
+                _stashStudioResults.value = result.studios
+                _stashSelectedStudio.value = result.studios.firstOrNull()
+                _rawStashScenesList.value = result.scenes
+                _stashScenesList.value = filtered
+                _stashTotalScenesCount.value = result.scenes.size
+                _stashCanLoadMore.value = hasMore
+                stashTabCacheMap[StashSearchType.PORNHUB_STUDIO] = StashTabCache(
+                    studioResults = result.studios,
+                    selectedStudio = result.studios.firstOrNull(),
+                    scenes = filtered,
+                    rawScenes = result.scenes,
+                    totalCount = result.scenes.size,
+                    currentPage = 1,
+                    canLoadMore = hasMore,
+                    pornhubNextPageUrl = result.nextPageUrl
+                )
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
+                _stashSearchError.value = e.message ?: "Failed to explore PornHub channels"
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            }
+        }
+    }
+
+    fun exploreTrendingXhamster() {
+        stashSearchJob?.cancel()
+        stashScenesJob?.cancel()
+        stashLoadMoreJob?.cancel()
+        _isStashLoadingMore.value = false
+        stashSearchJob = viewModelScope.launch(Dispatchers.IO) {
+            _isStashLoadingEntities.value = true
+            _isStashLoadingScenes.value = true
+            _stashSearchError.value = null
+            _stashPerformerResults.value = emptyList()
+            _stashSelectedPerformer.value = null
+            _stashSelectedSceneIds.value = emptySet()
+            _stashCurrentPage.value = 1
+            _stashCanLoadMore.value = false
+            currentXhamsterNextPageUrl = null
+            _stashSearchQuery.value = ""
+            try {
+                val result = com.example.network.XhamsterStarScraper.exploreXhamster()
+                val sortedRaw = sortLocalStashScenes(result.scenes, _stashSortMode.value)
+                val filtered = applyStudioFilter(sortedRaw, settings.value)
+                val hasMore = sortedRaw.isNotEmpty() && !result.nextPageUrl.isNullOrBlank()
+                currentXhamsterNextPageUrl = result.nextPageUrl
+                _stashPerformerResults.value = result.results
+                _stashSelectedPerformer.value = result.results.firstOrNull()
+                _rawStashScenesList.value = sortedRaw
+                _stashScenesList.value = filtered
+                _stashTotalScenesCount.value = sortedRaw.size
+                _stashCanLoadMore.value = hasMore
+                stashTabCacheMap[StashSearchType.XHAMSTER] = StashTabCache(
+                    performerResults = result.results,
+                    selectedPerformer = result.results.firstOrNull(),
+                    scenes = filtered,
+                    rawScenes = sortedRaw,
+                    totalCount = sortedRaw.size,
+                    currentPage = 1,
+                    canLoadMore = hasMore,
+                    sortMode = _stashSortMode.value,
+                    xhamsterNextPageUrl = result.nextPageUrl
+                )
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _rawStashScenesList.value = emptyList()
+                _stashScenesList.value = emptyList()
+                _stashSearchError.value = e.message ?: "Failed to explore xHamster"
+                _isStashLoadingEntities.value = false
+                _isStashLoadingScenes.value = false
+            }
+        }
+    }
+
     private val sexmexCoverRefreshTimestamps = ConcurrentHashMap<String, Long>()
     private val sexmexRefreshSemaphore = kotlinx.coroutines.sync.Semaphore(2)
 
     fun autoRefreshSexMexCoverIfNeeded(link: LinkEntity) {
-        val sceneUrl = link.stashDbId?.trim() ?: return
-        if (!sceneUrl.contains("sexmex.xxx", ignoreCase = true) && !sceneUrl.contains("sexmex.com", ignoreCase = true)) {
+        val stashId = link.stashDbId?.trim().orEmpty()
+        val hdUrl = link.urlHD?.trim().orEmpty()
+        val fourKUrl = link.url4K?.trim().orEmpty()
+
+        val isSexMex = stashId.contains("sexmex.xxx", ignoreCase = true) ||
+            stashId.contains("sexmex.com", ignoreCase = true)
+        val pornhubTarget = when {
+            stashId.startsWith("pornhub:", ignoreCase = true) -> stashId
+            com.example.network.VideoResolvers.isPornhubUrl(hdUrl) -> hdUrl
+            com.example.network.VideoResolvers.isPornhubUrl(fourKUrl) -> fourKUrl
+            else -> null
+        }
+        val xhamsterTarget = when {
+            com.example.network.XhamsterStarScraper.isXhamsterUrl(hdUrl) -> hdUrl
+            com.example.network.XhamsterStarScraper.isXhamsterUrl(fourKUrl) -> fourKUrl
+            else -> null
+        }
+
+        if (!isSexMex && pornhubTarget == null && xhamsterTarget == null) {
             return
         }
 
@@ -1188,13 +1588,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             sexmexRefreshSemaphore.acquire()
             try {
-                val freshUrl = com.example.network.SexMexScraper.fetchFreshCoverUrl(sceneUrl)
+                val freshUrl = when {
+                    isSexMex -> com.example.network.SexMexScraper.fetchFreshCoverUrl(stashId)
+                    pornhubTarget != null -> com.example.network.PornhubStarScraper.fetchFreshCoverUrl(pornhubTarget)
+                    xhamsterTarget != null -> com.example.network.XhamsterStarScraper.fetchFreshCoverUrl(xhamsterTarget)
+                    else -> null
+                }
                 if (!freshUrl.isNullOrBlank() && freshUrl != link.coverImage) {
                     repository.updateLink(link.copy(coverImage = freshUrl))
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                android.util.Log.e("MainViewModel", "Failed to auto-refresh SexMex cover for ${link.id}", e)
+                android.util.Log.e("MainViewModel", "Failed to auto-refresh cover for ${link.id}", e)
             } finally {
                 sexmexRefreshSemaphore.release()
             }
@@ -1209,6 +1614,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!currentSettings.enableStudioFilter) return false
         val sName = studioName?.trim()
         val sId = studioId?.trim()
+        // Never treat generic PornHub or xHamster platform fallback as a blocked studio
+        if (sId.equals("pornhub", ignoreCase = true) || sName.equals("PornHub", ignoreCase = true) ||
+            sId.equals("xhamster", ignoreCase = true) || sName.equals("xHamster", ignoreCase = true)
+        ) {
+            return false
+        }
         if (!sName.isNullOrBlank()) {
             if (!sId.isNullOrBlank()) {
                 blockedStudioNameIdMap[sName.lowercase()] = sId
@@ -1228,7 +1639,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         rawScenes.forEach { scene ->
             val sName = scene.studioName?.trim()
             val sId = scene.studioId?.trim()
-            if (!sName.isNullOrBlank() && !sId.isNullOrBlank()) {
+            if (!sName.isNullOrBlank() && !sId.isNullOrBlank() &&
+                !sId.equals("pornhub", ignoreCase = true) && !sName.equals("PornHub", ignoreCase = true) &&
+                !sId.equals("xhamster", ignoreCase = true) && !sName.equals("xHamster", ignoreCase = true)
+            ) {
                 blockedStudioNameIdMap[sName.lowercase()] = sId
             }
             val pName = scene.parentStudioName?.trim()
@@ -1270,8 +1684,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun blockStudio(studioId: String?, studioName: String?) {
         val name = studioName?.trim() ?: return
-        if (name.isBlank()) return
-        val sId = studioId?.trim()?.takeIf { it.isNotBlank() }
+        if (name.isBlank() || name.equals("PornHub", ignoreCase = true) || name.equals("xHamster", ignoreCase = true)) return
+        val sId = studioId?.trim()?.takeIf {
+            it.isNotBlank() && !it.equals("pornhub", ignoreCase = true) && !it.equals("xhamster", ignoreCase = true)
+        }
         if (sId != null) {
             blockedStudioNameIdMap[name.lowercase()] = sId
         }
@@ -1356,6 +1772,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        if (_stashActiveType.value == StashSearchType.PORNHUB) {
+            stashScenesJob?.cancel()
+            stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
+                currentPornhubNextPageUrl = null
+                try {
+                    val pageResult = com.example.network.PornhubStarScraper.scrapePornhubPerformerScenes(
+                        pageOrProfileUrl = performer.id,
+                        knownPerformer = performer
+                    )
+                    val resolvedPerf = pageResult.performer
+                    if (resolvedPerf != null && (resolvedPerf.id != performer.id || (!resolvedPerf.imageUrl.isNullOrBlank() && performer.imageUrl.isNullOrBlank()))) {
+                        _stashSelectedPerformer.value = resolvedPerf
+                        _stashPerformerResults.value = _stashPerformerResults.value.map {
+                            if (it.id == performer.id || it.name.equals(performer.name, ignoreCase = true)) resolvedPerf else it
+                        }
+                    }
+                    val scenes = pageResult.scenes
+                    val filtered = applyStudioFilter(scenes, settings.value)
+                    val hasMore = scenes.isNotEmpty() && !pageResult.nextPageUrl.isNullOrBlank()
+                    currentPornhubNextPageUrl = pageResult.nextPageUrl
+                    _stashTotalScenesCount.value = scenes.size
+                    _rawStashScenesList.value = scenes
+                    _stashScenesList.value = filtered
+                    _stashCanLoadMore.value = hasMore
+                    syncCurrentTabToCache()
+                    _isStashLoadingScenes.value = false
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    _rawStashScenesList.value = emptyList()
+                    _stashScenesList.value = emptyList()
+                    _stashSearchError.value = e.message ?: "Failed to load PornHub scenes"
+                    _isStashLoadingScenes.value = false
+                }
+            }
+            return
+        }
+
+        if (_stashActiveType.value == StashSearchType.XHAMSTER) {
+            stashScenesJob?.cancel()
+            stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
+                currentXhamsterNextPageUrl = null
+                try {
+                    val pageResult = com.example.network.XhamsterStarScraper.scrapeXhamsterEntityScenes(
+                        pageOrEntityUrl = performer.id,
+                        knownEntity = performer
+                    )
+                    val resolvedEntity = pageResult.entity
+                    if (resolvedEntity != null && (resolvedEntity.id != performer.id || (!resolvedEntity.imageUrl.isNullOrBlank() && performer.imageUrl.isNullOrBlank()))) {
+                        _stashSelectedPerformer.value = resolvedEntity
+                        _stashPerformerResults.value = _stashPerformerResults.value.map {
+                            if (it.id == performer.id || it.name.equals(performer.name, ignoreCase = true)) resolvedEntity else it
+                        }
+                    }
+                    val sortedRaw = sortLocalStashScenes(pageResult.scenes, _stashSortMode.value)
+                    val filtered = applyStudioFilter(sortedRaw, settings.value)
+                    val hasMore = sortedRaw.isNotEmpty() && !pageResult.nextPageUrl.isNullOrBlank()
+                    currentXhamsterNextPageUrl = pageResult.nextPageUrl
+                    _stashTotalScenesCount.value = sortedRaw.size
+                    _rawStashScenesList.value = sortedRaw
+                    _stashScenesList.value = filtered
+                    _stashCanLoadMore.value = hasMore
+                    syncCurrentTabToCache()
+                    _isStashLoadingScenes.value = false
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    _rawStashScenesList.value = emptyList()
+                    _stashScenesList.value = emptyList()
+                    _stashSearchError.value = e.message ?: "Failed to load xHamster scenes"
+                    _isStashLoadingScenes.value = false
+                }
+            }
+            return
+        }
+
         val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
         val activeSort = _stashSortMode.value
 
@@ -1431,6 +1921,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isStashLoadingScenes.value = true
         _stashCurrentPage.value = 1
         _stashSearchError.value = null
+
+        if (_stashActiveType.value == StashSearchType.PORNHUB_STUDIO) {
+            stashScenesJob?.cancel()
+            stashScenesJob = viewModelScope.launch(Dispatchers.IO) {
+                currentPornhubNextPageUrl = null
+                try {
+                    val pageResult = com.example.network.PornhubStarScraper.scrapePornhubChannelScenes(
+                        pageOrChannelUrl = studio.id,
+                        knownStudio = studio
+                    )
+                    val resolvedStudio = pageResult.studio
+                    if (resolvedStudio != null && (resolvedStudio.id != studio.id || (!resolvedStudio.logoUrl.isNullOrBlank() && studio.logoUrl.isNullOrBlank()))) {
+                        _stashSelectedStudio.value = resolvedStudio
+                        _stashStudioResults.value = _stashStudioResults.value.map {
+                            if (it.id == studio.id || it.name.equals(studio.name, ignoreCase = true)) resolvedStudio else it
+                        }
+                    }
+                    val scenes = pageResult.scenes
+                    val filtered = applyStudioFilter(scenes, settings.value)
+                    val hasMore = scenes.isNotEmpty() && !pageResult.nextPageUrl.isNullOrBlank()
+                    currentPornhubNextPageUrl = pageResult.nextPageUrl
+                    _stashTotalScenesCount.value = scenes.size
+                    _rawStashScenesList.value = scenes
+                    _stashScenesList.value = filtered
+                    _stashCanLoadMore.value = hasMore
+                    syncCurrentTabToCache()
+                    _isStashLoadingScenes.value = false
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    _rawStashScenesList.value = emptyList()
+                    _stashScenesList.value = emptyList()
+                    _stashSearchError.value = e.message ?: "Failed to load PornHub channel scenes"
+                    _isStashLoadingScenes.value = false
+                }
+            }
+            return
+        }
+
         val effectiveApiKey = apiKey.ifBlank { settings.value.stashDbApiKey }
         val activeSort = _stashSortMode.value
 
@@ -1515,6 +2043,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (currentType == StashSearchType.ACTORS && selectedPerf == null) return
         if (currentType == StashSearchType.STUDIO && selectedStud == null) return
         if (currentType == StashSearchType.SEXMEX && currentSexMexNextPageUrl.isNullOrBlank()) return
+        if (currentType.isPornhubTab && currentPornhubNextPageUrl.isNullOrBlank()) return
+        if (currentType == StashSearchType.XHAMSTER && currentXhamsterNextPageUrl.isNullOrBlank()) return
 
         stashLoadMoreJob?.cancel()
         stashLoadMoreJob = viewModelScope.launch(Dispatchers.IO) {
@@ -1572,6 +2102,81 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             break
                         }
                         currentSexMexNextPageUrl = pageResult.nextPageUrl
+                        _stashCurrentPage.value = nextPage
+                        val previousVisibleCount = _stashScenesList.value.size
+                        val updatedRaw = (_rawStashScenesList.value + pageResult.scenes).distinctBy { it.id }
+                        _rawStashScenesList.value = updatedRaw
+                        val updatedFiltered = applyStudioFilter(updatedRaw, settings.value)
+                        _stashScenesList.value = updatedFiltered
+                        _stashTotalScenesCount.value = updatedRaw.size
+                        val hasMore = !pageResult.nextPageUrl.isNullOrBlank() && updatedRaw.size > previousVisibleCount
+                        _stashCanLoadMore.value = hasMore
+                        syncCurrentTabToCache()
+                        addedVisible += (updatedFiltered.size - previousVisibleCount).coerceAtLeast(0)
+                        if (!hasMore) break
+                    } else if (currentType == StashSearchType.PORNHUB) {
+                        val targetUrl = currentPornhubNextPageUrl ?: break
+                        val pageResult = com.example.network.PornhubStarScraper.scrapePornhubPerformerScenes(
+                            pageOrProfileUrl = targetUrl,
+                            knownPerformer = selectedPerf
+                        )
+                        if (pageResult.scenes.isEmpty()) {
+                            currentPornhubNextPageUrl = null
+                            _stashCanLoadMore.value = false
+                            syncCurrentTabToCache()
+                            break
+                        }
+                        currentPornhubNextPageUrl = pageResult.nextPageUrl
+                        _stashCurrentPage.value = nextPage
+                        val previousVisibleCount = _stashScenesList.value.size
+                        val updatedRaw = (_rawStashScenesList.value + pageResult.scenes).distinctBy { it.id }
+                        _rawStashScenesList.value = updatedRaw
+                        val updatedFiltered = applyStudioFilter(updatedRaw, settings.value)
+                        _stashScenesList.value = updatedFiltered
+                        _stashTotalScenesCount.value = updatedRaw.size
+                        val hasMore = !pageResult.nextPageUrl.isNullOrBlank() && updatedRaw.size > previousVisibleCount
+                        _stashCanLoadMore.value = hasMore
+                        syncCurrentTabToCache()
+                        addedVisible += (updatedFiltered.size - previousVisibleCount).coerceAtLeast(0)
+                        if (!hasMore) break
+                    } else if (currentType == StashSearchType.PORNHUB_STUDIO) {
+                        val targetUrl = currentPornhubNextPageUrl ?: break
+                        val pageResult = com.example.network.PornhubStarScraper.scrapePornhubChannelScenes(
+                            pageOrChannelUrl = targetUrl,
+                            knownStudio = selectedStud
+                        )
+                        if (pageResult.scenes.isEmpty()) {
+                            currentPornhubNextPageUrl = null
+                            _stashCanLoadMore.value = false
+                            syncCurrentTabToCache()
+                            break
+                        }
+                        currentPornhubNextPageUrl = pageResult.nextPageUrl
+                        _stashCurrentPage.value = nextPage
+                        val previousVisibleCount = _stashScenesList.value.size
+                        val updatedRaw = (_rawStashScenesList.value + pageResult.scenes).distinctBy { it.id }
+                        _rawStashScenesList.value = updatedRaw
+                        val updatedFiltered = applyStudioFilter(updatedRaw, settings.value)
+                        _stashScenesList.value = updatedFiltered
+                        _stashTotalScenesCount.value = updatedRaw.size
+                        val hasMore = !pageResult.nextPageUrl.isNullOrBlank() && updatedRaw.size > previousVisibleCount
+                        _stashCanLoadMore.value = hasMore
+                        syncCurrentTabToCache()
+                        addedVisible += (updatedFiltered.size - previousVisibleCount).coerceAtLeast(0)
+                        if (!hasMore) break
+                    } else if (currentType == StashSearchType.XHAMSTER) {
+                        val targetUrl = currentXhamsterNextPageUrl ?: break
+                        val pageResult = com.example.network.XhamsterStarScraper.scrapeXhamsterEntityScenes(
+                            pageOrEntityUrl = targetUrl,
+                            knownEntity = selectedPerf
+                        )
+                        if (pageResult.scenes.isEmpty()) {
+                            currentXhamsterNextPageUrl = null
+                            _stashCanLoadMore.value = false
+                            syncCurrentTabToCache()
+                            break
+                        }
+                        currentXhamsterNextPageUrl = pageResult.nextPageUrl
                         _stashCurrentPage.value = nextPage
                         val previousVisibleCount = _stashScenesList.value.size
                         val updatedRaw = (_rawStashScenesList.value + pageResult.scenes).distinctBy { it.id }
@@ -1655,15 +2260,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val linksToSaveBatch = mutableListOf<LinkEntity>()
 
             try {
-                for ((index, scene) in scenesToSave.withIndex()) {
+                for ((index, rawScene) in scenesToSave.withIndex()) {
                     ensureActive()
 
+                    val isXhamsterScene = _stashActiveType.value == StashSearchType.XHAMSTER ||
+                        rawScene.id.startsWith("xhamster:", ignoreCase = true) ||
+                        com.example.network.XhamsterStarScraper.isXhamsterUrl(rawScene.directVideoUrl)
+
+                    val isPornhubScene = !isXhamsterScene && (
+                        _stashActiveType.value.isPornhubTab ||
+                            rawScene.id.startsWith("pornhub:", ignoreCase = true) ||
+                            !rawScene.directVideoUrl.isNullOrBlank()
+                        )
+
+                    val isDirectVideoScene = isPornhubScene || isXhamsterScene
+
                     _saveProgressCurrent.value = index + 1
+                    _saveCurrentTitle.value = rawScene.title
+                    _saveCurrentPhase.value = when {
+                        isDirectVideoScene -> "Fetching scene details..."
+                        fetchTorrents -> "Fetching torrent..."
+                        else -> "Preparing scene..."
+                    }
+
+                    val scene = when {
+                        isXhamsterScene -> {
+                            com.example.network.XhamsterStarScraper.enrichSceneForSave(
+                                scene = rawScene,
+                                blockMalePerformers = settings.value.blockMalePerformers
+                            )
+                        }
+                        isPornhubScene -> {
+                            com.example.network.PornhubStarScraper.enrichSceneForSave(
+                                scene = rawScene,
+                                blockMalePerformers = settings.value.blockMalePerformers
+                            )
+                        }
+                        else -> rawScene
+                    }
                     _saveCurrentTitle.value = scene.title
-                    _saveCurrentPhase.value = if (fetchTorrents) "Fetching torrent..." else "Preparing scene..."
+
+                    if (isDirectVideoScene && scene != rawScene) {
+                        _rawStashScenesList.value = _rawStashScenesList.value.map { if (it.id == scene.id) scene else it }
+                        _stashScenesList.value = _stashScenesList.value.map { if (it.id == scene.id) scene else it }
+                    }
 
                     // 1. Process female performers
-                    val sortedPerformers = if (selectedPerf != null) {
+                    val sortedPerformers = if (selectedPerf != null && !com.example.network.XhamsterStarScraper.isStudioEntity(selectedPerf)) {
                         val matching = scene.femalePerformers.filter {
                             it.id == selectedPerf.id || it.name.trim().equals(selectedPerf.name.trim(), ignoreCase = true)
                         }
@@ -1685,17 +2328,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             rawPName
                         }
                         val validPerformerStashId = perf.id.takeIf {
-                            !it.startsWith("sexmex:", ignoreCase = true) && !it.startsWith("http", ignoreCase = true)
+                            !it.startsWith("sexmex:", ignoreCase = true) &&
+                                !it.startsWith("pornhub:", ignoreCase = true) &&
+                                !it.startsWith("xhamster:", ignoreCase = true) &&
+                                !it.startsWith("http", ignoreCase = true)
                         }
 
                         val collapsedTarget = pName.lowercase().replace(Regex("[^a-z0-9]"), "")
-                        val existing = allExistingActors.find {
+                        val existingIndex = allExistingActors.indexOfFirst {
                             (validPerformerStashId != null && it.stashDbId == validPerformerStashId) ||
                             it.name.trim().equals(pName, ignoreCase = true) ||
                             (collapsedTarget.length >= 4 && it.name.lowercase().replace(Regex("[^a-z0-9]"), "") == collapsedTarget)
                         }
 
-                        if (existing != null) {
+                        if (existingIndex >= 0) {
+                            var existing = allExistingActors[existingIndex]
+                            if (existing.imageUrl.isBlank() && !perf.imageUrl.isNullOrBlank()) {
+                                existing = existing.copy(
+                                    imageUrl = perf.imageUrl,
+                                    originalImageUrl = existing.originalImageUrl?.takeIf { it.isNotBlank() } ?: perf.imageUrl
+                                )
+                                allExistingActors[existingIndex] = existing
+                                newActorsToInsert.removeAll { it.id == existing.id }
+                                newActorsToInsert.add(existing)
+                            }
                             actorIds.add(existing.id)
                             actorEntitiesForSearch.add(existing)
                         } else {
@@ -1721,14 +2377,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (!scene.studioName.isNullOrBlank()) {
                         val sName = scene.studioName.trim()
                         val validStudioStashId = scene.studioId?.takeIf {
-                            !it.equals("sexmex", ignoreCase = true) && !it.startsWith("http", ignoreCase = true)
+                            !it.equals("sexmex", ignoreCase = true) &&
+                                !it.equals("pornhub", ignoreCase = true) &&
+                                !it.equals("xhamster", ignoreCase = true) &&
+                                !it.startsWith("xhamster:", ignoreCase = true) &&
+                                !it.startsWith("http", ignoreCase = true)
                         }
-                        val existingStudio = allExistingStudios.find {
+                        val existingStudioIndex = allExistingStudios.indexOfFirst {
                             (validStudioStashId != null && it.stashDbId == validStudioStashId) ||
                             it.name.trim().equals(sName, ignoreCase = true)
                         }
 
-                        if (existingStudio != null) {
+                        if (existingStudioIndex >= 0) {
+                            var existingStudio = allExistingStudios[existingStudioIndex]
+                            if (existingStudio.logoUrl.isNullOrBlank() && !scene.studioLogo.isNullOrBlank()) {
+                                existingStudio = existingStudio.copy(
+                                    logoUrl = scene.studioLogo,
+                                    imageUrl = existingStudio.imageUrl?.takeIf { it.isNotBlank() } ?: scene.studioLogo
+                                )
+                                allExistingStudios[existingStudioIndex] = existingStudio
+                                newStudiosToInsert.removeAll { it.id == existingStudio.id }
+                                newStudiosToInsert.add(existingStudio)
+                            }
                             studioIds.add(existingStudio.id)
                             studioEntitiesForSearch.add(existingStudio)
                         } else {
@@ -1750,8 +2420,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // 3. Parse date
                     val parsedDate = StashDbApiService.parseDateToMillis(scene.date)
 
-                    // 4. Fetch torrent magnet if requested
-                    val torrentResult = if (fetchTorrents) {
+                    // 4. Fetch torrent magnet ONLY if requested and NOT a direct-URL scene (PornHub / xHamster)
+                    val shouldFetchTorrent = fetchTorrents && !isDirectVideoScene
+                    val torrentResult = if (shouldFetchTorrent) {
                         try {
                             fetchMagnetInternal(
                                 title = scene.title,
@@ -1775,9 +2446,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     _saveCurrentPhase.value = "Saving..."
 
+                    val directVideoUrl = scene.directVideoUrl?.takeIf { it.isNotBlank() }
+                    val targetDirectHdUrl = if (isXhamsterScene && scene.is4k) null else directVideoUrl
+                    val targetDirect4kUrl = if (isXhamsterScene && scene.is4k) directVideoUrl else null
+
                     // 5. Build & insert LinkEntity safely
                     val existingLink = allExistingLinks.find {
                         (!scene.id.isNullOrBlank() && it.stashDbId == scene.id) ||
+                        (!directVideoUrl.isNullOrBlank() && (
+                            it.urlHD.equals(directVideoUrl, ignoreCase = true) ||
+                                it.url4K.equals(directVideoUrl, ignoreCase = true)
+                            )) ||
                         (scene.title.isNotBlank() && it.title.trim().equals(scene.title.trim(), ignoreCase = true) && parsedDate != null && it.assignedDate != null && it.assignedDate == parsedDate)
                     }
 
@@ -1789,6 +2468,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             actorIds = (actorIds + existingLink.actorIds).distinct(),
                             studioIds = (studioIds + existingLink.studioIds).distinct(),
                             assignedDate = existingLink.assignedDate ?: parsedDate,
+                            urlHD = if (isXhamsterScene) (targetDirectHdUrl ?: existingLink.urlHD) else (targetDirectHdUrl ?: existingLink.urlHD),
+                            url4K = if (isXhamsterScene) (targetDirect4kUrl ?: existingLink.url4K) else existingLink.url4K,
                             magnet = torrentResult?.magnet1080p ?: existingLink.magnet,
                             magnet4K = torrentResult?.magnet2160p ?: existingLink.magnet4K,
                             torrentUrlHD = torrentResult?.url1080p ?: existingLink.torrentUrlHD,
@@ -1804,6 +2485,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             actorIds = actorIds.distinct(),
                             studioIds = studioIds.distinct(),
                             assignedDate = parsedDate,
+                            urlHD = targetDirectHdUrl,
+                            url4K = targetDirect4kUrl,
                             magnet = torrentResult?.magnet1080p,
                             magnet4K = torrentResult?.magnet2160p,
                             torrentUrlHD = torrentResult?.url1080p,

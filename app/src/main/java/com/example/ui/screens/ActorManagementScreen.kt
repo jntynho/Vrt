@@ -52,11 +52,11 @@ import java.util.UUID
 
 private val PrivacyScrim = Color.Black.copy(alpha = 0.75f)
 
-enum class ManagementSortOption(val displayName: String) {
-    NAME_AZ("A - Z"),
-    NAME_ZA("Z - A"),
-    NEWEST("Recently Added"),
-    OLDEST("Oldest Added")
+enum class ManagementSortOption {
+    NAME_AZ,
+    NAME_ZA,
+    NEWEST,
+    OLDEST
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,7 +75,7 @@ fun ActorManagementScreen(
     val showCards = settings.showManagementCards
 
     var showAddDialog by remember { mutableStateOf(false) }
-    val sortOption by viewModel.actorsSortOption.collectAsStateWithLifecycle()
+    var sortOption by remember { mutableStateOf(ManagementSortOption.NAME_AZ) }
     var showSortMenu by remember { mutableStateOf(false) }
 
     // Search state
@@ -169,7 +169,7 @@ fun ActorManagementScreen(
                             )
                         }
 
-                        // Sort Menu Button & Unified Dropdown
+                        // Sort Menu Button & Dropdown
                         Box {
                             IconButton(
                                 onClick = { showSortMenu = true },
@@ -184,18 +184,25 @@ fun ActorManagementScreen(
 
                             com.example.ui.components.VaultSortDropdownMenu(
                                 expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false },
-                                options = ManagementSortOption.entries.map { option ->
-                                    com.example.ui.components.VaultSortOption(
-                                        value = option,
-                                        label = option.displayName,
-                                        isSelected = sortOption == option
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                val actorSortOptions = listOf(
+                                    ManagementSortOption.NAME_AZ to "A - Z",
+                                    ManagementSortOption.NAME_ZA to "Z - A",
+                                    ManagementSortOption.NEWEST to "New",
+                                    ManagementSortOption.OLDEST to "Old"
+                                )
+                                actorSortOptions.forEach { (option, label) ->
+                                    com.example.ui.components.VaultSortDropdownItem(
+                                        label = label,
+                                        isSelected = sortOption == option,
+                                        onClick = {
+                                            sortOption = option
+                                            showSortMenu = false
+                                        }
                                     )
-                                },
-                                onOptionSelected = { selectedOption ->
-                                    viewModel.actorsSortOption.value = selectedOption
                                 }
-                            )
+                            }
                         }
 
                         // Add Actor Button

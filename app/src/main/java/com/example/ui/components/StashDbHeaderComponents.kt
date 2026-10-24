@@ -252,15 +252,19 @@ fun HorizontalStudioCircleItem(
         ) {
             if (imageRequest != null) {
                 var isImageError by remember(formattedLogoUrl) { mutableStateOf(false) }
+                val isChannelAvatar = remember(studio.id) {
+                    studio.id.contains("pornhub.com/channels", ignoreCase = true) ||
+                        studio.id.contains("xhamster.com/channels", ignoreCase = true)
+                }
                 if (!isImageError) {
                     AsyncImage(
                         model = imageRequest,
                         contentDescription = studio.name,
-                        contentScale = ContentScale.Fit,
+                        contentScale = if (isChannelAvatar) ContentScale.Crop else ContentScale.Fit,
                         onError = { isImageError = true },
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(8.dp)
+                            .let { if (isChannelAvatar) it else it.padding(8.dp) }
                             .privacyImageBlur(isBetaTest)
                     )
                     if (isBetaTest) {
@@ -374,4 +378,7 @@ fun StashSearchType.tabIndex(): Int = when (this) {
     StashSearchType.ACTORS -> 0
     StashSearchType.STUDIO -> 1
     StashSearchType.SEXMEX -> 2
+    StashSearchType.PORNHUB -> 3
+    StashSearchType.PORNHUB_STUDIO -> 4
+    StashSearchType.XHAMSTER -> 5
 }

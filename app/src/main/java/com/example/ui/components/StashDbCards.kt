@@ -431,9 +431,13 @@ fun StashGridPhotoCard(
                     )
                 }
 
-                // Row 2: Studio Icon + Studio Name (Clickable to Block Studio)
+                // Row 2: Studio Icon + Studio Name (Clickable to Block Studio, except generic PornHub / xHamster placeholder)
                 val studioText = scene.studioName ?: "Studio"
-                val hasStudio = !scene.studioName.isNullOrBlank()
+                val isGenericPlatformPlaceholder = scene.studioId.equals("pornhub", ignoreCase = true) ||
+                    scene.studioName.equals("PornHub", ignoreCase = true) ||
+                    scene.studioId.equals("xhamster", ignoreCase = true) ||
+                    scene.studioName.equals("xHamster", ignoreCase = true)
+                val hasStudio = !scene.studioName.isNullOrBlank() && !isGenericPlatformPlaceholder
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),

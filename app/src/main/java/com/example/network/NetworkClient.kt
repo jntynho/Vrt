@@ -94,7 +94,18 @@ object NetworkClient {
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
                     )
                 }
+                val host = original.url.host.lowercase()
                 val pathLower = original.url.encodedPath.lowercase()
+                val isPhnImageHost = host.contains("phncdn.com") && (
+                    host.startsWith("pix") ||
+                        host.startsWith("ei.") ||
+                        host.startsWith("di.") ||
+                        host.startsWith("ci.") ||
+                        host.startsWith("bi.") ||
+                        pathLower.contains("/rs:fit:") ||
+                        pathLower.contains("/rs:fill:") ||
+                        pathLower.contains("/thumbs_")
+                    )
                 val isImageRequest = pathLower.endsWith(".jpg") ||
                     pathLower.endsWith(".jpeg") ||
                     pathLower.endsWith(".png") ||
@@ -102,7 +113,8 @@ object NetworkClient {
                     pathLower.endsWith(".gif") ||
                     pathLower.endsWith(".svg") ||
                     pathLower.contains("/contentthumbs/") ||
-                    pathLower.contains("/images/")
+                    pathLower.contains("/images/") ||
+                    isPhnImageHost
 
                 val existingAccept = original.header("Accept")
                 if (existingAccept == null) {
@@ -138,9 +150,12 @@ object NetworkClient {
                         .header("Upgrade-Insecure-Requests", "1")
                 }
 
-                val host = original.url.host
-                if (host.contains("sexmex", ignoreCase = true) || host.contains("sexmex-cdn", ignoreCase = true)) {
+                if (host.contains("sexmex") || host.contains("sexmex-cdn")) {
                     requestBuilder.header("Referer", "https://sexmex.xxx/")
+                } else if (host.contains("phncdn.com") || host.contains("pornhub.com")) {
+                    if (original.header("Referer") == null) {
+                        requestBuilder.header("Referer", "https://www.pornhub.com/")
+                    }
                 }
 
                 val request = requestBuilder.build()

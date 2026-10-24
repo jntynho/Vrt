@@ -86,7 +86,7 @@ object VideoResolvers {
             val doc = org.jsoup.Jsoup.parse(html, url)
 
             var extractedTitle: String? = null
-            var extractedCover: String? = null
+            val coverCandidates = mutableListOf<String?>()
             var extractedDateStr: String? = null
             var extractedPerformerName: String? = null
             var extractedPerformerAvatar: String? = null
@@ -109,14 +109,12 @@ object VideoResolvers {
                         if (extractedTitle.isNullOrBlank()) {
                             extractedTitle = jsonObj.optString("name").takeIf { it.isNotBlank() }
                         }
-                        if (extractedCover.isNullOrBlank()) {
-                            val thumbAny = jsonObj.opt("thumbnailUrl")
-                            extractedCover = when (thumbAny) {
-                                is String -> thumbAny.takeIf { it.isNotBlank() }
-                                is JSONArray -> (0 until thumbAny.length())
-                                    .mapNotNull { thumbAny.optString(it).takeIf { s -> s.isNotBlank() } }
-                                    .firstOrNull()
-                                else -> null
+                        when (val thumbAny = jsonObj.opt("thumbnailUrl")) {
+                            is String -> coverCandidates.add(thumbAny)
+                            is JSONArray -> {
+                                for (i in 0 until thumbAny.length()) {
+                                    coverCandidates.add(thumbAny.optString(i))
+                                }
                             }
                         }
                         if (extractedDateStr.isNullOrBlank()) {
@@ -129,7 +127,11 @@ object VideoResolvers {
                 }
             }
 
-            // 2. Parse flashvars_<id> JSON
+            // 2. Meta OG / Twitter high-res covers
+            coverCandidates.add(doc.selectFirst("meta[property=og:image]")?.attr("content"))
+            coverCandidates.add(doc.selectFirst("meta[name=twitter:image]")?.attr("content"))
+
+            // 3. Parse flashvars_<id> JSON
             val flashvarsMatcher = Pattern.compile("var\\s+flashvars_\\d+\\s*=\\s*(\\{.*?\\});", Pattern.DOTALL).matcher(html)
             if (flashvarsMatcher.find()) {
                 val jsonStr = flashvarsMatcher.group(1)
@@ -142,18 +144,14 @@ object VideoResolvers {
                                 extractedTitle = vTitle.replace("+", " ").trim()
                             }
                         }
-                        if (extractedCover.isNullOrBlank()) {
-                            extractedCover = flashvarsJson.optString("image_url")
-                                .replace("\\/", "/")
-                                .takeIf { it.isNotBlank() }
-                        }
+                        coverCandidates.add(flashvarsJson.optString("image_url"))
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to parse Pornhub flashvars in metadata extractor: ${e.message}")
                     }
                 }
             }
 
-            // 3. DOM & Meta Tag Fallbacks for Title & Cover & Date
+            // 4. DOM & Meta Tag Fallbacks for Title & Cover & Date
             if (extractedTitle.isNullOrBlank()) {
                 extractedTitle = doc.selectFirst("h1.title span.inlineFree, h1.title")?.text()?.trim()
                     ?: doc.selectFirst("meta[property=og:title], meta[name=twitter:title]")?.attr("content")?.trim()
@@ -165,12 +163,7 @@ object VideoResolvers {
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
 
-            if (extractedCover.isNullOrBlank()) {
-                extractedCover = doc.selectFirst("meta[property=og:image], meta[name=twitter:image]")
-                    ?.attr("content")
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
-            }
+            val extractedCover = PornhubStarScraper.selectBestPornhubCoverUrl(coverCandidates, html)
 
             if (extractedDateStr.isNullOrBlank()) {
                 extractedDateStr = doc.selectFirst("meta[property=video:release_date]")?.attr("content")?.trim()

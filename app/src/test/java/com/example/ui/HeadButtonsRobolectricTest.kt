@@ -177,8 +177,12 @@ class HeadButtonsRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Test Back Button in Head when search is not expanded
-        composeTestRule.onNodeWithTag("back_button").assertIsDisplayed().performClick()
+        // 1. Verify initial Source Selection Hub options (StashDB & SexMex)
+        composeTestRule.onNodeWithTag("stash_source_option_stashdb").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("stash_source_option_sexmex").assertIsDisplayed()
+
+        // Enter StashDB mode
+        composeTestRule.onNodeWithTag("stash_source_option_stashdb").performClick()
         composeTestRule.waitForIdle()
 
         // 2. Test Search Button in StashDB Head
@@ -192,6 +196,11 @@ class HeadButtonsRobolectricTest {
         // 3. Test Close Search Button in Head
         composeTestRule.onNodeWithTag("close_search_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
+
+        // 4. Test Back Button in Head returns to Hub
+        composeTestRule.onNodeWithTag("back_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("stash_source_option_stashdb").assertIsDisplayed()
     }
 
     @Test

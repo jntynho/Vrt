@@ -60,6 +60,7 @@ import com.example.network.StashSceneSortMode
 import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
 import com.example.ui.StashSearchType
+import com.example.ui.StashSourceMode
 import com.example.ui.components.*
 import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalVaultPalette
@@ -85,6 +86,16 @@ fun StashDbScreen(
     val savedStashDbIds by remember(savedLinks) {
         derivedStateOf { savedLinks.mapNotNull { it.stashDbId }.toSet() }
     }
+    val savedHdUrls by remember(savedLinks) {
+        derivedStateOf {
+            savedLinks.flatMap { link ->
+                listOfNotNull(
+                    link.urlHD?.trim()?.lowercase()?.takeIf { s -> s.isNotEmpty() },
+                    link.url4K?.trim()?.lowercase()?.takeIf { s -> s.isNotEmpty() }
+                )
+            }.toSet()
+        }
+    }
     val savedTitleAndDatePairs by remember(savedLinks) {
         derivedStateOf {
             savedLinks.map { Pair(it.title.trim().lowercase(), it.assignedDate) }.toSet()
@@ -94,6 +105,7 @@ fun StashDbScreen(
     // Persistent state from MainViewModel
     val searchQuery by viewModel.stashSearchQuery.collectAsStateWithLifecycle()
     val activeType by viewModel.stashActiveType.collectAsStateWithLifecycle()
+    val sourceMode by viewModel.stashSourceMode.collectAsStateWithLifecycle()
     val currentSort by viewModel.stashSortMode.collectAsStateWithLifecycle()
     val isSearchExpanded by viewModel.isStashSearchExpanded.collectAsStateWithLifecycle()
 
@@ -122,17 +134,20 @@ fun StashDbScreen(
     val saveCurrentPhase by viewModel.saveCurrentPhase.collectAsStateWithLifecycle()
     val saveSavedWithTorrentsCount by viewModel.saveSavedWithTorrentsCount.collectAsStateWithLifecycle()
 
+    val handleBackNavigation = {
+        if (!isSavingWithProgress) {
+            when {
+                selectedSceneIds.isNotEmpty() -> viewModel.clearStashSelection()
+                isSearchExpanded -> viewModel.setStashSearchExpanded(false)
+                sourceMode != StashSourceMode.HUB -> viewModel.selectStashSourceMode(StashSourceMode.HUB, settings.stashDbApiKey)
+                else -> viewModel.navigateBack()
+            }
+        }
+    }
+
     // System Back Press Handling
     BackHandler {
-        if (isSavingWithProgress) {
-            return@BackHandler
-        } else if (selectedSceneIds.isNotEmpty()) {
-            viewModel.clearStashSelection()
-        } else if (isSearchExpanded) {
-            viewModel.setStashSearchExpanded(false)
-        } else {
-            viewModel.navigateBack()
-        }
+        handleBackNavigation()
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -244,7 +259,7 @@ fun StashDbScreen(
 
     LaunchedEffect(shouldLoadMore) {
         if (shouldLoadMore) {
-            val isApiKeyRequired = activeType != StashSearchType.SEXMEX
+            val isApiKeyRequired = activeType == StashSearchType.ACTORS || activeType == StashSearchType.STUDIO
             if (!isApiKeyRequired || settings.stashDbApiKey.isNotBlank()) {
                 viewModel.loadMoreStashScenes(settings.stashDbApiKey)
             }
@@ -353,6 +368,9 @@ fun StashDbScreen(
                                                 StashSearchType.ACTORS -> "Search actor..."
                                                 StashSearchType.STUDIO -> "Search studio..."
                                                 StashSearchType.SEXMEX -> "Paste SexMex Scene URL or Model..."
+                                                StashSearchType.PORNHUB -> "Search PornHub pornstar..."
+                                                StashSearchType.PORNHUB_STUDIO -> "Search PornHub channel..."
+                                                StashSearchType.XHAMSTER -> "Search xHamster actor, studio or URL..."
                                             },
                                             style = MaterialTheme.typography.bodyLarge.copy(
                                                 fontSize = 15.sp,
@@ -368,7 +386,12 @@ fun StashDbScreen(
                         )
                     } else {
                         Text(
-                            text = "StashDB",
+                            text = when (sourceMode) {
+                                StashSourceMode.SEXMEX -> "SexMex"
+                                StashSourceMode.PORNHUB -> "PornHub"
+                                StashSourceMode.XHAMSTER -> "xHamster"
+                                else -> "StashDB"
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.titleLarge.copy(
@@ -406,7 +429,7 @@ fun StashDbScreen(
                         }
                     } else {
                         IconButton(
-                            onClick = { viewModel.navigateBack() },
+                            onClick = { handleBackNavigation() },
                             modifier = Modifier.testTag("back_button")
                         ) {
                             Icon(
@@ -460,22 +483,14 @@ fun StashDbScreen(
                                 )
                             }
                         }
-                    } else if (selectedSceneIds.isEmpty()) {
+                    } else if (selectedSceneIds.isEmpty() && sourceMode != StashSourceMode.HUB) {
                         val canShowSortInHeader = when (activeType) {
-                            StashSearchType.ACTORS -> selectedPerformer != null
-                            StashSearchType.STUDIO -> selectedStudio != null
+                            StashSearchType.ACTORS -> sourceMode == StashSourceMode.STASHDB && selectedPerformer != null
+                            StashSearchType.STUDIO -> sourceMode == StashSourceMode.STASHDB && selectedStudio != null
+                            StashSearchType.PORNHUB -> sourceMode == StashSourceMode.PORNHUB && (selectedPerformer != null || scenesList.isNotEmpty())
+                            StashSearchType.PORNHUB_STUDIO -> sourceMode == StashSourceMode.PORNHUB && (selectedStudio != null || scenesList.isNotEmpty())
+                            StashSearchType.XHAMSTER -> sourceMode == StashSourceMode.XHAMSTER && (selectedPerformer != null || scenesList.isNotEmpty())
                             StashSearchType.SEXMEX -> false
-                        }
-
-                        IconButton(
-                            onClick = { viewModel.setStashSearchExpanded(true) },
-                            modifier = Modifier.testTag("stashdb_search_action_button")
-                        ) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_app_search),
-                                contentDescription = "Search",
-                                tint = palette.textPrimary
-                            )
                         }
 
                         AnimatedVisibility(
@@ -498,25 +513,39 @@ fun StashDbScreen(
                                 com.example.ui.components.VaultSortDropdownMenu(
                                     expanded = showSortMenu,
                                     onDismissRequest = { showSortMenu = false },
-                                    options = StashSceneSortMode.entries.map { mode ->
-                                        com.example.ui.components.VaultSortOption(
-                                            value = mode,
+                                    modifier = Modifier.widthIn(min = 210.dp)
+                                ) {
+                                    StashSceneSortMode.entries.forEach { mode ->
+                                        val isSelected = currentSort == mode
+                                        com.example.ui.components.VaultSortDropdownItem(
                                             label = mode.displayName,
-                                            isSelected = currentSort == mode,
-                                            testTag = "stash_sort_option_${mode.name.lowercase()}"
-                                        )
-                                    },
-                                    onOptionSelected = { mode ->
-                                        if (currentSort != mode) {
-                                            coroutineScope.launch {
-                                                isHorizontalResultsVisible = true
-                                                gridState.scrollToItem(0)
+                                            isSelected = isSelected,
+                                            modifier = Modifier.testTag("stash_sort_option_${mode.name.lowercase()}"),
+                                            onClick = {
+                                                showSortMenu = false
+                                                if (currentSort != mode) {
+                                                    coroutineScope.launch {
+                                                        isHorizontalResultsVisible = true
+                                                        gridState.scrollToItem(0)
+                                                    }
+                                                    viewModel.setStashSortMode(mode, settings.stashDbApiKey)
+                                                }
                                             }
-                                            viewModel.setStashSortMode(mode, settings.stashDbApiKey)
-                                        }
+                                        )
                                     }
-                                )
+                                }
                             }
+                        }
+
+                        IconButton(
+                            onClick = { viewModel.setStashSearchExpanded(true) },
+                            modifier = Modifier.testTag("stashdb_search_action_button")
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_app_search),
+                                contentDescription = "Search",
+                                tint = palette.textPrimary
+                            )
                         }
                     }
                 },
@@ -532,243 +561,252 @@ fun StashDbScreen(
                 .fillMaxSize()
                 .padding(top = padding.calculateTopPadding())
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Warning Banner: Missing StashDB API Key (Only shown for StashDB tabs: ACTORS & STUDIO)
-                if (settings.stashDbApiKey.isBlank() && activeType != StashSearchType.SEXMEX) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = "API Key Warning",
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "StashDB API Key Missing",
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = palette.textPrimary
-                                )
-                                Text(
-                                    text = "Add your key in Settings to search actors and scenes.",
-                                    fontSize = 11.sp,
-                                    color = palette.textSecondary
-                                )
-                            }
-                            FilledTonalButton(
-                                onClick = { viewModel.navigateTo(ScreenState.Settings) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
-                            ) {
-                                Text("Settings", fontSize = 11.5.sp)
-                            }
-                        }
-                    }
-                }
-
-                // Search Error Banner (Independent)
-                if (searchError != null) {
-                    Surface(
-                        color = palette.cardBg,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ErrorOutline,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = searchError ?: "Search failed",
-                                fontSize = 11.5.sp,
-                                color = palette.textPrimary,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-
-                // Two Mode Selector Tabs: Actors & Studio with Smooth Sliding Indicator
-                Surface(
-                    color = palette.surface,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .drawBehind {
-                            drawLine(
-                                color = palette.border,
-                                start = Offset(0f, size.height),
-                                end = Offset(size.width, size.height),
-                                strokeWidth = 1.dp.toPx()
-                            )
-                        }
-                ) {
-                    val indicatorBias by animateFloatAsState(
-                        targetValue = when (activeType) {
-                            StashSearchType.ACTORS -> -1f
-                            StashSearchType.STUDIO -> 0f
-                            StashSearchType.SEXMEX -> 1f
+            AnimatedContent(
+                targetState = sourceMode,
+                transitionSpec = {
+                    val isForward = initialState == StashSourceMode.HUB && targetState != StashSourceMode.HUB
+                    (fadeIn(animationSpec = tween(220, easing = LinearOutSlowInEasing)) +
+                        slideInHorizontally(animationSpec = tween(220, easing = FastOutSlowInEasing)) { if (isForward) it / 6 else -it / 6 })
+                        .togetherWith(
+                            fadeOut(animationSpec = tween(160, easing = FastOutLinearInEasing)) +
+                                slideOutHorizontally(animationSpec = tween(180, easing = FastOutSlowInEasing)) { if (isForward) -it / 6 else it / 6 }
+                        )
+                },
+                label = "stash_source_mode_transition"
+            ) { currentSourceMode ->
+                if (currentSourceMode == StashSourceMode.HUB) {
+                    StashSourceSelectionHub(
+                        onSelectStashDb = {
+                            viewModel.selectStashSourceMode(StashSourceMode.STASHDB, settings.stashDbApiKey)
                         },
-                        animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
-                        label = "stash_tab_indicator_bias"
+                        onSelectSexMex = {
+                            viewModel.selectStashSourceMode(StashSourceMode.SEXMEX, settings.stashDbApiKey)
+                        },
+                        onSelectPornhub = {
+                            viewModel.selectStashSourceMode(StashSourceMode.PORNHUB, settings.stashDbApiKey)
+                        },
+                        onSelectXhamster = {
+                            viewModel.selectStashSourceMode(StashSourceMode.XHAMSTER, settings.stashDbApiKey)
+                        }
                     )
-                    val actorTabColor by animateColorAsState(
-                        targetValue = if (activeType == StashSearchType.ACTORS) accent else palette.textSecondary,
-                        animationSpec = tween(durationMillis = 180),
-                        label = "actor_tab_color"
-                    )
-                    val studioTabColor by animateColorAsState(
-                        targetValue = if (activeType == StashSearchType.STUDIO) accent else palette.textSecondary,
-                        animationSpec = tween(durationMillis = 180),
-                        label = "studio_tab_color"
-                    )
-                    val sexmexTabColor by animateColorAsState(
-                        targetValue = if (activeType == StashSearchType.SEXMEX) accent else palette.textSecondary,
-                        animationSpec = tween(durationMillis = 180),
-                        label = "sexmex_tab_color"
-                    )
-
-                    Column {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            Row(modifier = Modifier.fillMaxSize()) {
-                                // Actors Tab
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                            onClick = { viewModel.setStashActiveType(StashSearchType.ACTORS, settings.stashDbApiKey) }
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(id = R.drawable.ic_nav_actor),
-                                            contentDescription = null,
-                                            tint = actorTabColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Actor",
-                                            fontWeight = if (activeType == StashSearchType.ACTORS) FontWeight.Bold else FontWeight.SemiBold,
-                                            color = actorTabColor
-                                        )
-                                    }
-                                }
-
-                                // Studio Tab
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                            onClick = { viewModel.setStashActiveType(StashSearchType.STUDIO, settings.stashDbApiKey) }
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(id = R.drawable.ic_nav_studio),
-                                            contentDescription = null,
-                                            tint = studioTabColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Studio",
-                                            fontWeight = if (activeType == StashSearchType.STUDIO) FontWeight.Bold else FontWeight.SemiBold,
-                                            color = studioTabColor
-                                        )
-                                    }
-                                }
-
-                                // SexMex Tab
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                            onClick = { viewModel.setStashActiveType(StashSearchType.SEXMEX, settings.stashDbApiKey) }
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(id = R.drawable.ic_sexmex),
-                                            contentDescription = null,
-                                            tint = sexmexTabColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "SexMex",
-                                            fontWeight = if (activeType == StashSearchType.SEXMEX) FontWeight.Bold else FontWeight.SemiBold,
-                                            color = sexmexTabColor
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Smooth Sliding Indicator Underline (Full-width like Model Details)
-                            Box(
+                } else {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Warning Banner: Missing StashDB API Key (Only shown in StashDB mode)
+                        if (currentSourceMode == StashSourceMode.STASHDB && settings.stashDbApiKey.isBlank()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(3.dp)
-                                    .align(Alignment.BottomCenter)
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(1f / 3f)
-                                        .fillMaxHeight()
-                                        .align(BiasAlignment(indicatorBias, 0f))
-                                        .background(accent)
-                                )
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = "API Key Warning",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "StashDB API Key Missing",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = palette.textPrimary
+                                        )
+                                        Text(
+                                            text = "Add your key in Settings to search actors and scenes.",
+                                            fontSize = 11.sp,
+                                            color = palette.textSecondary
+                                        )
+                                    }
+                                    FilledTonalButton(
+                                        onClick = { viewModel.navigateTo(ScreenState.Settings) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text("Settings", fontSize = 11.5.sp)
+                                    }
+                                }
                             }
                         }
-                        HorizontalDivider(color = palette.border)
-                    }
-                }
+
+                        // Search Error Banner (Independent)
+                        if (searchError != null) {
+                            Surface(
+                                color = palette.cardBg,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ErrorOutline,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = searchError ?: "Search failed",
+                                        fontSize = 11.5.sp,
+                                        color = palette.textPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Two Mode Selector Tabs: Actor & Studio in both StashDB and PornHub modes
+                        if (currentSourceMode == StashSourceMode.STASHDB || currentSourceMode == StashSourceMode.PORNHUB) {
+                            val isPornhubMode = currentSourceMode == StashSourceMode.PORNHUB
+                            val isStudioSelected = activeType.isStudioTab
+                            val actorTargetType = if (isPornhubMode) StashSearchType.PORNHUB else StashSearchType.ACTORS
+                            val studioTargetType = if (isPornhubMode) StashSearchType.PORNHUB_STUDIO else StashSearchType.STUDIO
+
+                            Surface(
+                                color = palette.surface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .let { mod ->
+                                        if (isPornhubMode) {
+                                            mod
+                                        } else {
+                                            mod.drawBehind {
+                                                drawLine(
+                                                    color = palette.border,
+                                                    start = Offset(0f, size.height),
+                                                    end = Offset(size.width, size.height),
+                                                    strokeWidth = 1.dp.toPx()
+                                                )
+                                            }
+                                        }
+                                    }
+                            ) {
+                                val indicatorBias by animateFloatAsState(
+                                    targetValue = if (isStudioSelected) 1f else -1f,
+                                    animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                                    label = "stash_tab_indicator_bias"
+                                )
+                                val actorTabColor by animateColorAsState(
+                                    targetValue = if (!isStudioSelected) accent else palette.textSecondary,
+                                    animationSpec = tween(durationMillis = 180),
+                                    label = "actor_tab_color"
+                                )
+                                val studioTabColor by animateColorAsState(
+                                    targetValue = if (isStudioSelected) accent else palette.textSecondary,
+                                    animationSpec = tween(durationMillis = 180),
+                                    label = "studio_tab_color"
+                                )
+
+                                Column {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                    ) {
+                                        Row(modifier = Modifier.fillMaxSize()) {
+                                            // Actors Tab
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxHeight()
+                                                    .testTag("stashdb_tab_actors")
+                                                    .clickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null,
+                                                        onClick = { viewModel.setStashActiveType(actorTargetType, settings.stashDbApiKey) }
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(id = R.drawable.ic_nav_actor),
+                                                        contentDescription = null,
+                                                        tint = actorTabColor,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Actor",
+                                                        fontWeight = if (!isStudioSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                        color = actorTabColor
+                                                    )
+                                                }
+                                            }
+
+                                            // Studio Tab
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxHeight()
+                                                    .testTag("stashdb_tab_studio")
+                                                    .clickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null,
+                                                        onClick = { viewModel.setStashActiveType(studioTargetType, settings.stashDbApiKey) }
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(id = R.drawable.ic_nav_studio),
+                                                        contentDescription = null,
+                                                        tint = studioTabColor,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Studio",
+                                                        fontWeight = if (isStudioSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                                        color = studioTabColor
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Smooth Sliding Indicator Underline (Half-width for 2 tabs)
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(3.dp)
+                                                .align(Alignment.BottomCenter)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth(1f / 2f)
+                                                    .fillMaxHeight()
+                                                    .align(BiasAlignment(indicatorBias, 0f))
+                                                    .background(accent)
+                                            )
+                                        }
+                                    }
+                                    if (!isPornhubMode) {
+                                        HorizontalDivider(color = palette.border)
+                                    }
+                                }
+                            }
+                        } else if (currentSourceMode != StashSourceMode.PORNHUB && currentSourceMode != StashSourceMode.XHAMSTER) {
+                            HorizontalDivider(color = palette.border)
+                        }
 
                 val hasActiveHorizontalResults = when (activeType) {
-                    StashSearchType.ACTORS, StashSearchType.SEXMEX -> performerResults.isNotEmpty()
-                    StashSearchType.STUDIO -> studioResults.isNotEmpty()
+                    StashSearchType.ACTORS, StashSearchType.SEXMEX, StashSearchType.PORNHUB, StashSearchType.XHAMSTER -> performerResults.isNotEmpty()
+                    StashSearchType.STUDIO, StashSearchType.PORNHUB_STUDIO -> studioResults.isNotEmpty()
                 }
 
                 // Horizontal Results Row with Smooth Native Scroll-Driven Collapse
@@ -839,7 +877,7 @@ fun StashDbScreen(
                             },
                             label = "stash_results_type_anim"
                         ) { type ->
-                            if ((type == StashSearchType.ACTORS || type == StashSearchType.SEXMEX) && performerResults.isNotEmpty()) {
+                            if ((type == StashSearchType.ACTORS || type == StashSearchType.SEXMEX || type == StashSearchType.PORNHUB || type == StashSearchType.XHAMSTER) && performerResults.isNotEmpty()) {
                                 Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                                     Text(
                                         text = "Results : ${performerResults.size}",
@@ -860,27 +898,47 @@ fun StashDbScreen(
                                     ) {
                                         items(performerResults, key = { performer -> "${type.name}_${performer.id}" }) { performer ->
                                             val isSelected = selectedPerformer?.id == performer.id
-                                            val matchingActor = remember(type, allActors, performer.id, performer.name) {
-                                                if (type == StashSearchType.ACTORS) {
-                                                    allActors.firstOrNull { actor ->
-                                                        (actor.stashDbId != null && actor.stashDbId == performer.id) ||
-                                                        actor.name.trim().equals(performer.name.trim(), ignoreCase = true)
+                                            val isUnifiedStudio = type == StashSearchType.XHAMSTER &&
+                                                com.example.network.XhamsterStarScraper.isStudioEntity(performer)
+                                            if (isUnifiedStudio) {
+                                                val studioItem = remember(performer.id, performer.name, performer.imageUrl) {
+                                                    com.example.network.StashStudio(
+                                                        id = performer.id,
+                                                        name = performer.name,
+                                                        logoUrl = performer.imageUrl
+                                                    )
+                                                }
+                                                HorizontalStudioCircleItem(
+                                                    studio = studioItem,
+                                                    isSelected = isSelected,
+                                                    onClick = {
+                                                        if (isSearchExpanded) viewModel.setStashSearchExpanded(false)
+                                                        viewModel.selectStashPerformer(performer, settings.stashDbApiKey)
                                                     }
-                                                } else null
+                                                )
+                                            } else {
+                                                val matchingActor = remember(type, allActors, performer.id, performer.name) {
+                                                    if (type == StashSearchType.ACTORS || type == StashSearchType.PORNHUB || type == StashSearchType.XHAMSTER) {
+                                                        allActors.firstOrNull { actor ->
+                                                            (actor.stashDbId != null && actor.stashDbId == performer.id) ||
+                                                            actor.name.trim().equals(performer.name.trim(), ignoreCase = true)
+                                                        }
+                                                    } else null
+                                                }
+                                                HorizontalActorCircleItem(
+                                                    performer = performer,
+                                                    isSelected = isSelected,
+                                                    onClick = {
+                                                        if (isSearchExpanded) viewModel.setStashSearchExpanded(false)
+                                                        viewModel.selectStashPerformer(performer, settings.stashDbApiKey)
+                                                    },
+                                                    actorEntity = matchingActor
+                                                )
                                             }
-                                            HorizontalActorCircleItem(
-                                                performer = performer,
-                                                isSelected = isSelected,
-                                                onClick = {
-                                                    if (isSearchExpanded) viewModel.setStashSearchExpanded(false)
-                                                    viewModel.selectStashPerformer(performer, settings.stashDbApiKey)
-                                                },
-                                                actorEntity = matchingActor
-                                            )
                                         }
                                     }
                                 }
-                            } else if (type == StashSearchType.STUDIO && studioResults.isNotEmpty()) {
+                            } else if ((type == StashSearchType.STUDIO || type == StashSearchType.PORNHUB_STUDIO) && studioResults.isNotEmpty()) {
                                 Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                                     Text(
                                         text = "Results : ${studioResults.size}",
@@ -899,7 +957,7 @@ fun StashDbScreen(
                                             .fillMaxWidth()
                                             .horizontalFadeEdge(24.dp)
                                     ) {
-                                        items(studioResults, key = { studio -> studio.id }) { studio ->
+                                        items(studioResults, key = { studio -> "${type.name}_${studio.id}" }) { studio ->
                                             val isSelected = selectedStudio?.id == studio.id
                                             HorizontalStudioCircleItem(
                                                 studio = studio,
@@ -960,8 +1018,9 @@ fun StashDbScreen(
                                     val parsedDate = remember(scene.date) {
                                         StashDbApiService.parseDateToMillis(scene.date)
                                     }
-                                    val isAlreadySaved = remember(scene.id, scene.title, parsedDate, savedStashDbIds, savedTitleAndDatePairs) {
+                                    val isAlreadySaved = remember(scene.id, scene.directVideoUrl, scene.title, parsedDate, savedStashDbIds, savedHdUrls, savedTitleAndDatePairs) {
                                         (scene.id in savedStashDbIds) ||
+                                            (!scene.directVideoUrl.isNullOrBlank() && scene.directVideoUrl.trim().lowercase() in savedHdUrls) ||
                                             (parsedDate != null && Pair(scene.title.trim().lowercase(), parsedDate) in savedTitleAndDatePairs)
                                     }
 
@@ -987,7 +1046,13 @@ fun StashDbScreen(
                                                 viewModel.toggleStashSceneSelection(scene.id)
                                             },
                                             onStudioClick = { id, name ->
-                                                studioToBlock = Pair(id, name)
+                                                val isGeneric = id.equals("pornhub", ignoreCase = true) ||
+                                                    name.equals("PornHub", ignoreCase = true) ||
+                                                    id.equals("xhamster", ignoreCase = true) ||
+                                                    name.equals("xHamster", ignoreCase = true)
+                                                if (!isGeneric) {
+                                                    studioToBlock = Pair(id, name)
+                                                }
                                             }
                                         )
                                     }
@@ -1039,38 +1104,87 @@ fun StashDbScreen(
                             ) { type ->
                                 EmptyStateView(
                                     icon = when (type) {
-                                        StashSearchType.ACTORS -> Icons.Outlined.Person
-                                        StashSearchType.STUDIO -> Icons.Outlined.Videocam
-                                        StashSearchType.SEXMEX -> Icons.Default.Language
+                                        StashSearchType.ACTORS, StashSearchType.PORNHUB -> Icons.Outlined.Person
+                                        StashSearchType.STUDIO, StashSearchType.PORNHUB_STUDIO -> Icons.Outlined.Videocam
+                                        StashSearchType.SEXMEX, StashSearchType.XHAMSTER -> Icons.Default.Language
                                     },
                                     title = when (type) {
                                         StashSearchType.ACTORS -> "Search Actor & Explore Scenes"
                                         StashSearchType.STUDIO -> "Search Studio & Explore Scenes"
                                         StashSearchType.SEXMEX -> "Search SexMex Model or Scene"
+                                        StashSearchType.PORNHUB -> "Search PornHub Pornstar"
+                                        StashSearchType.PORNHUB_STUDIO -> "Search PornHub Channel"
+                                        StashSearchType.XHAMSTER -> "Search xHamster Actor or Studio"
                                     },
-                                    subtitle = if (type == StashSearchType.SEXMEX) {
-                                        "Search for a performer or scene title, or explore the latest releases directly."
-                                    } else {
-                                        "Tap the search icon in the header, type a name or query, and tap search. Click any scene to select, then tap the checkmark in the header to save."
+                                    subtitle = when (type) {
+                                        StashSearchType.SEXMEX ->
+                                            "Search for a performer or scene title, or explore the latest releases directly."
+                                        StashSearchType.PORNHUB ->
+                                            "Tap the search icon to search PornHub pornstars, view suggestions in Results, and save scenes directly."
+                                        StashSearchType.PORNHUB_STUDIO ->
+                                            "Tap the search icon to search PornHub channels, view suggestions in Results, and save scenes directly."
+                                        StashSearchType.XHAMSTER ->
+                                            "Tap the search icon to search both actors and studios in one unified Results bar, or explore trending stars & channels."
+                                        else ->
+                                            "Tap the search icon in the header, type a name or query, and tap search. Click any scene to select, then tap the checkmark in the header to save."
                                     },
-                                    content = if (type == StashSearchType.SEXMEX) {
-                                        {
-                                            TextButton(
-                                                onClick = { viewModel.exploreLatestSexMex() },
-                                                shape = RoundedCornerShape(8.dp),
-                                                modifier = Modifier.testTag("sexmex_explore_button")
-                                            ) {
-                                                Text(
-                                                    text = "Explore",
-                                                    style = MaterialTheme.typography.titleSmall.copy(
-                                                        fontWeight = FontWeight.Bold,
-                                                        letterSpacing = 0.5.sp
-                                                    ),
-                                                    color = accent
-                                                )
+                                    content = when (type) {
+                                        StashSearchType.SEXMEX -> {
+                                            {
+                                                TextButton(
+                                                    onClick = { viewModel.exploreLatestSexMex() },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.testTag("sexmex_explore_button")
+                                                ) {
+                                                    Text(
+                                                        text = "Explore",
+                                                        style = MaterialTheme.typography.titleSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            letterSpacing = 0.5.sp
+                                                        ),
+                                                        color = accent
+                                                    )
+                                                }
                                             }
                                         }
-                                    } else null
+                                        StashSearchType.PORNHUB, StashSearchType.PORNHUB_STUDIO -> {
+                                            {
+                                                TextButton(
+                                                    onClick = { viewModel.exploreTrendingPornhub() },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.testTag("pornhub_explore_button")
+                                                ) {
+                                                    Text(
+                                                        text = "Explore",
+                                                        style = MaterialTheme.typography.titleSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            letterSpacing = 0.5.sp
+                                                        ),
+                                                        color = accent
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        StashSearchType.XHAMSTER -> {
+                                            {
+                                                TextButton(
+                                                    onClick = { viewModel.exploreTrendingXhamster() },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.testTag("xhamster_explore_button")
+                                                ) {
+                                                    Text(
+                                                        text = "Explore",
+                                                        style = MaterialTheme.typography.titleSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            letterSpacing = 0.5.sp
+                                                        ),
+                                                        color = accent
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        else -> null
+                                    }
                                 )
                             }
                         }
@@ -1100,6 +1214,65 @@ fun StashDbScreen(
                         endPadding = 16.dp
                     )
                 }
+            }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StashSourceSelectionHub(
+    onSelectStashDb: () -> Unit,
+    onSelectSexMex: () -> Unit,
+    onSelectPornhub: () -> Unit,
+    onSelectXhamster: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        GroupedCard {
+            Box(modifier = Modifier.testTag("stash_source_option_stashdb")) {
+                SettingsRow(
+                    title = "StashDB",
+                    subtitle = "Search Actors & Studios",
+                    icon = painterResource(id = R.drawable.ic_nav_stashdb),
+                    trailing = { SettingsNavigationChevron() },
+                    onClick = onSelectStashDb
+                )
+            }
+            SettingsDivider()
+            Box(modifier = Modifier.testTag("stash_source_option_sexmex")) {
+                SettingsRow(
+                    title = "SexMex",
+                    subtitle = "Explore & Search SexMex Scenes",
+                    icon = painterResource(id = R.drawable.ic_sexmex),
+                    trailing = { SettingsNavigationChevron() },
+                    onClick = onSelectSexMex
+                )
+            }
+            SettingsDivider()
+            Box(modifier = Modifier.testTag("stash_source_option_pornhub")) {
+                SettingsRow(
+                    title = "PornHub",
+                    subtitle = "Search Pornstars, Channels & Scenes",
+                    icon = painterResource(id = R.drawable.ic_pornhub),
+                    trailing = { SettingsNavigationChevron() },
+                    onClick = onSelectPornhub
+                )
+            }
+            SettingsDivider()
+            Box(modifier = Modifier.testTag("stash_source_option_xhamster")) {
+                SettingsRow(
+                    title = "xHamster",
+                    subtitle = "Search Actors, Studios & 4K/HD Scenes",
+                    icon = painterResource(id = R.drawable.ic_xhamster),
+                    trailing = { SettingsNavigationChevron() },
+                    onClick = onSelectXhamster
+                )
             }
         }
     }
@@ -1146,4 +1319,5 @@ private fun StashSortAnimatedCardItem(
         content()
     }
 }
+
 
